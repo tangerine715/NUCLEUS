@@ -1,0 +1,16 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# Jobfiles and logs
+wandb/
+outputs/
+*.sub
+*.out
+*.log
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Wandb API key
+bubbleformer/config/wandb_api_key.txt
