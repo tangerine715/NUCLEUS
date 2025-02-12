@@ -1,2 +1,3 @@
-lr_scheduler: cosine
-eta_min: 1.0e-6
+name: cosine
+params:
+  eta_min: 1.0e-6

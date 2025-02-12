@@ -1,8 +1,7 @@
 dataset: poolboiling_combined
 normalize: none
-field_width: 512
-field_height: 512
-in_channels: 4
+fields: ["dfun", "temperature", "velx", "vely"]
+time_window: 5
 train_paths: 
   - /share/crsp/lab/ai4ts/share/BubbleML_f32/PoolBoiling-Saturated-FC72-2D-0.1/Twall-90.hdf5
   - /share/crsp/lab/ai4ts/share/BubbleML_f32/PoolBoiling-Saturated-FC72-2D-0.1/Twall-92.hdf5

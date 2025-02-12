@@ -2,8 +2,11 @@ log_dir: /pub/sheikhh1/bubbleformer_logs
 seed: 42
 
 distributed: True
+devices: 4
 
-resuming: False
+max_epochs: 100
+batch_size: 4
+
 checkpoint_path:
 
 use_wandb: True
@@ -16,6 +19,6 @@ wandb_tags:
 defaults:
   - _self_
   - data_cfg: poolboiling_saturated
-  - model_cfg: avit_big
+  - model_cfg: avit_small
   - optim_cfg: adamw
-  - scheduler_cfg: cosine
+  - scheduler_cfg: cosine_warmup

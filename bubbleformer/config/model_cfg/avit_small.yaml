@@ -1,13 +1,5 @@
-model_name: avit
-
-time_window: 5
-future_window: 5
-
-train:
-  num_epochs: 100
-  batch_size: 12
-
-model:
+name: avit
+params:
   patch_size: 16
   embed_dim: 384
   processor_blocks: 12
