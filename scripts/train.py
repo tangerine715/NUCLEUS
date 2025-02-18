@@ -1,5 +1,6 @@
 import os
 import pprint
+import signal
 
 import hydra
 import wandb
@@ -8,6 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 from lightning import seed_everything, Trainer
 from lightning.pytorch.loggers import CSVLogger
+from lightning.pytorch.plugins.environments import SLURMEnvironment
 
 from bubbleformer.data import BubblemlForecast
 from bubbleformer.modules import ForecastModule
@@ -20,6 +22,8 @@ def main(cfg: DictConfig) -> None:
 
     params = {}
     params["distributed"] = cfg.distributed
+    params["nodes"] = cfg.nodes
+    params["devices"] = cfg.devices
     params["checkpoint_path"] = cfg.checkpoint_path
     params["data_cfg"] = cfg.data_cfg
     params["model_cfg"] = cfg.model_cfg
@@ -100,10 +104,12 @@ def main(cfg: DictConfig) -> None:
     trainer = Trainer(
         accelerator="gpu",
         devices=cfg.devices,
+        num_nodes=cfg.nodes,
         strategy="ddp",
         max_epochs=cfg.max_epochs,
         logger=logger,
         default_root_dir=params["log_dir"],
+        plugins=[SLURMEnvironment(requeue_signal=signal.SIGHUP)]
     )
 
     if cfg.checkpoint_path:
