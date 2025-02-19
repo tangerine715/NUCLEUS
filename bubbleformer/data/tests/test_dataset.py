@@ -21,11 +21,13 @@ def test_bubblemlforecastdataset(fields, norm, time_window):
         fields=fields,
         norm=norm,
         time_window=time_window,
+        start_time=5
     )
     diff_term, div_term = dataset.normalize()
     sample = dataset[0]
 
     expected_shape = (time_window, len(fields), 64, 64)
 
+    assert len(dataset) == 2 * (50 - 5 - 2 * time_window + 1)
     assert sample[0].shape == expected_shape and sample[1].shape == expected_shape
     assert diff_term.shape == (len(fields),) and div_term.shape == (len(fields),)

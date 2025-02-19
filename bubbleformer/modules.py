@@ -1,5 +1,4 @@
-import random
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 
 import wandb
 from omegaconf import OmegaConf, DictConfig
@@ -16,6 +15,18 @@ from bubbleformer.utils.plot_utils import wandb_sdf_plotter, wandb_temp_plotter,
 import time
 
 class ForecastModule(L.LightningModule):
+    """
+    Module for training forecasting models with equal
+    input and output time windows.
+    Args:
+        model_cfg (DictConfig): YAML Model config loaded using OmegaConf
+        data_cfg (DictConfig): YAML Data config loaded using OmegaConf
+        optim_cfg (DictConfig): YAML Optimizer config loaded using OmegaConf
+        scheduler_cfg (DictConfig): YAML Scheduler config loaded using OmegaConf
+        log_wandb (bool): Whether to log to wandb
+        normalization_constants (Tuple[List, List]):
+                    Difference and Division constants for normalization
+    """
     def __init__(
         self,
         model_cfg: DictConfig,
@@ -23,7 +34,7 @@ class ForecastModule(L.LightningModule):
         optim_cfg: DictConfig,
         scheduler_cfg: DictConfig,
         log_wandb: bool = False,
-        normalization_constants: Tuple[torch.Tensor, torch.Tensor] = None
+        normalization_constants: Tuple[List, List] = None
     ):
         super().__init__()
         self.model_cfg = OmegaConf.to_container(model_cfg, resolve=True)
@@ -35,22 +46,23 @@ class ForecastModule(L.LightningModule):
         self.log_wandb = log_wandb
 
         self.model_cfg["params"]["fields"] = len(self.data_cfg["fields"])
+        self.model_cfg["params"]["time_window"] = self.data_cfg["time_window"]
         self.save_hyperparameters()
 
         self.criterion = LpLoss(d=2, p=2, reduce_dims=[0,1,2], reductions=["mean", "mean", "sum"])
         self.model = get_model(self.model_cfg["name"], **self.model_cfg["params"])
-        self.T_max = None
+        self.t_max = None
         self.validation_sample = None
         self.train_start_time = None
-        self.val_start_time = None  
+        self.val_start_time = None
         # print(self.model)
-    
+
     def setup(
         self,
         stage: Optional[str] = None
     ):
         if stage == "fit":
-            self.T_max = self.trainer.estimated_stepping_batches
+            self.t_max = self.trainer.estimated_stepping_batches
 
     def forward(
         self,
@@ -63,8 +75,8 @@ class ForecastModule(L.LightningModule):
         batch: Tuple[torch.Tensor, torch.Tensor],
         batch_idx: int
     ) -> torch.Tensor:
-        inp, tgt = batch 
-        pred = self.model(inp)   
+        inp, tgt = batch
+        pred = self.model(inp)
         loss = self.criterion(pred, tgt)
 
         self.log(
@@ -98,7 +110,7 @@ class ForecastModule(L.LightningModule):
         inp, tgt = batch
         pred = self.model(inp)
         loss = self.criterion(pred, tgt)
-        if random.random() < 0.5:
+        if batch_idx == 0:
             self.validation_sample = (inp.detach(), tgt.detach(), pred.detach())
 
         self.log(
@@ -129,7 +141,7 @@ class ForecastModule(L.LightningModule):
         if scheduler_name == "cosine":
             scheduler = CosineAnnealingLR(
                             optimizer,
-                            T_max=self.T_max,
+                            T_max=self.t_max,
                             eta_min=scheduler_params["eta_min"],
                             last_epoch=self.trainer.global_step - 1
                         )
@@ -137,7 +149,7 @@ class ForecastModule(L.LightningModule):
             scheduler = CosineWarmupLR(
                             optimizer,
                             warmup_iters=scheduler_params["warmup_iters"],
-                            max_iters=self.T_max,
+                            max_iters=self.t_max,
                             eta_min=scheduler_params["eta_min"],
                             last_epoch=self.trainer.global_step - 1
                         )
@@ -152,43 +164,40 @@ class ForecastModule(L.LightningModule):
                 "frequency": 1
             }
         }
-    
+
     def on_train_epoch_start(self):
-        self.train_start_time = time.time()  
-        
+        self.train_start_time = time.time()
+
     def on_train_epoch_end(self):
-        train_time = time.time() - self.train_start_time  
+        train_time = time.time() - self.train_start_time
         if self.log_wandb:
-            wandb.log({"train_epoch_time": train_time, "epoch": self.current_epoch})  
-        
+            wandb.log({"train_epoch_time": train_time, "epoch": self.current_epoch})
+
     def on_validation_epoch_start(self):
-        self.val_start_time = time.time()  
+        self.val_start_time = time.time()
         if self.log_wandb:
             train_loss = self.trainer.callback_metrics["train_loss"].item()
             wandb.log({"train_loss_epoch": train_loss, "epoch": self.current_epoch})
-                
+
     def on_validation_epoch_end(self):
-        val_time = time.time() - self.val_start_time  
+        val_time = time.time() - self.val_start_time
         if self.log_wandb:
-            wandb.log({"val_epoch_time": val_time, "epoch": self.current_epoch})  
-            
+            wandb.log({"val_epoch_time": val_time, "epoch": self.current_epoch})
+
         fields = self.data_cfg["fields"]
         if self.validation_sample is None:
             return
-        inputs, targets, predictions = self.validation_sample
-        
-        #input_sample = inputs[0]  # T, C, H, W
+        _, targets, predictions = self.validation_sample
+
         target_sample = targets[0] # T, C, H, W
         pred_sample = predictions[0] # T, C, H, W
 
         if self.log_wandb:
             try:
                 sdf_idx = fields.index("dfun")
-                #input_sdfs = wandb_sdf_plotter(input_sample[:,sdf_idx,:,:])
                 target_sdfs = wandb_sdf_plotter(target_sample[:,sdf_idx,:,:])
                 pred_sdfs = wandb_sdf_plotter(pred_sample[:,sdf_idx,:,:])
                 wandb.log({
-                    #"Input SDF": wandb.Image(input_sdfs),
                     "Target SDF": wandb.Image(target_sdfs, caption=f"Epc {self.current_epoch}"),
                     "Prediction SDF": wandb.Image(pred_sdfs, caption=f"Epc {self.current_epoch}"),
                 })
@@ -197,11 +206,9 @@ class ForecastModule(L.LightningModule):
                 pass
             try:
                 temp_idx = fields.index("temperature")
-                #input_temps = wandb_temp_plotter(input_sample[:,temp_idx,:,:])
                 target_temps = wandb_temp_plotter(target_sample[:,temp_idx,:,:])
                 pred_temps = wandb_temp_plotter(pred_sample[:,temp_idx,:,:])
                 wandb.log({
-                    #"Input Temperature": wandb.Image(input_temps),
                     "Target Temp": wandb.Image(target_temps, caption=f"Epc {self.current_epoch}"),
                     "Prediction Temp": wandb.Image(pred_temps, caption=f"Epc {self.current_epoch}")
                 })
@@ -210,12 +217,6 @@ class ForecastModule(L.LightningModule):
             try:
                 velx_idx = fields.index("velx")
                 vely_idx = fields.index("vely")
-                #input_vel_field = torch.stack([
-                #                        input_sample[:,velx_idx,:,:],
-                #                        input_sample[:,vely_idx,:,:]
-                #                    ],
-                #                    dim=1
-                #                )
                 target_vel_field = torch.stack([
                                         target_sample[:,velx_idx,:,:],
                                         target_sample[:,vely_idx,:,:]
@@ -241,8 +242,7 @@ class ForecastModule(L.LightningModule):
 
         plt.close("all")
         self.validation_outputs = []
-        
+
         if self.log_wandb:
             val_loss = self.trainer.callback_metrics["val_loss"].item()
             wandb.log({"val_loss_epoch": val_loss, "epoch": self.current_epoch})
-                

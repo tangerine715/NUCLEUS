@@ -5,7 +5,7 @@ distributed: True
 nodes:
 devices:
 
-max_epochs: 100
+max_epochs: 400
 batch_size: 4
 
 checkpoint_path:
@@ -14,12 +14,12 @@ use_wandb: True
 wandb_tags:
   - baseline
   - relative_l2_loss
-  - AViT-S_29M
+  - Modern-UNet
   - PB-Saturated
 
 defaults:
   - _self_
   - data_cfg: poolboiling_saturated
-  - model_cfg: avit_small
+  - model_cfg: unet_modern
   - optim_cfg: adamw
   - scheduler_cfg: cosine_warmup

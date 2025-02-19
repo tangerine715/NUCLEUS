@@ -22,12 +22,14 @@ class BubblemlForecast(Dataset):
         fields: Optional[List[str]] = None,
         norm: str = "none",
         time_window: int = 16,
+        start_time: int = 50,
     ):
         super().__init__()
         self.filenames = filenames
         self.fields = fields if fields is not None else ["dfun", "temperature", "velx", "vely"]
         self.norm = norm
         self.time_window = time_window
+        self.start_time = start_time
         self.data = [h5.File(filename, "r") for filename in filenames]
         self.num_trajs = []
         self.traj_lens = []
@@ -47,7 +49,7 @@ class BubblemlForecast(Dataset):
     def __len__(self):
         total_len = 0
         for (num_traj, traj_len) in zip(self.num_trajs, self.traj_lens):
-            total_len += num_traj * (traj_len - 2 * self.time_window + 1)
+            total_len += num_traj * (traj_len - self.start_time - 2 * self.time_window + 1)
         return total_len
 
     def normalize(
@@ -122,13 +124,13 @@ class BubblemlForecast(Dataset):
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         samples_per_traj = [
-            x * (y - 2 * self.time_window + 1)
+            x * (y - self.start_time - 2 * self.time_window + 1)
             for x, y in zip(self.num_trajs, self.traj_lens)
         ]
 
         cumulative_samples = np.cumsum(samples_per_traj)
         file_idx = np.searchsorted(cumulative_samples, idx, side="right")
-        start = idx - (cumulative_samples[file_idx - 1] if file_idx > 0 else 0)
+        start = idx + self.start_time - (cumulative_samples[file_idx - 1] if file_idx > 0 else 0)
         temp_diff = self.max_temps[file_idx] - self.min_temps[file_idx]
 
         inp_slice = slice(start, start + self.time_window)
