@@ -42,7 +42,7 @@ def main(cfg: DictConfig) -> None:
     params["optim_cfg"] =  cfg.optim_cfg
     params["scheduler_cfg"] =  cfg.scheduler_cfg
 
-    if params["checkpoint_path"] is not None:
+    if params["checkpoint_path"] is None:
         log_id = (
             cfg.model_cfg.name.lower() + "_"
             + cfg.data_cfg.dataset.lower() + "_"
@@ -109,6 +109,7 @@ def main(cfg: DictConfig) -> None:
         enable_model_summary=True,
         limit_train_batches=500,
         limit_val_batches=50,
+        num_sanity_val_steps=0,
         callbacks=[ModelSummary(max_depth=-1)]
     )
 
