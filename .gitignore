@@ -21,6 +21,7 @@ outputs/
 *.code-workspace
 
 # Jupyter Notebook
+.virtual_documents
 .ipynb_checkpoints
 
 # Wandb API key

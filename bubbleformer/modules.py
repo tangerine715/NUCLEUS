@@ -97,7 +97,7 @@ class ForecastModule(L.LightningModule):
             prog_bar=True,
             logger=True
         )
-        if self.log_wandb:
+        if self.log_wandb and self.trainer.is_global_zero:
             wandb.log({"train_loss": loss, "learning_rate": current_lr})
 
         return loss
@@ -121,7 +121,7 @@ class ForecastModule(L.LightningModule):
             prog_bar=True,
             logger=True
         )
-        if self.log_wandb:
+        if self.log_wandb and self.trainer.is_global_zero:
             wandb.log({"val_loss": loss})
 
         return loss
@@ -169,20 +169,22 @@ class ForecastModule(L.LightningModule):
         self.train_start_time = time.time()
 
     def on_train_epoch_end(self):
-        train_time = time.time() - self.train_start_time
-        if self.log_wandb:
-            wandb.log({"train_epoch_time": train_time, "epoch": self.current_epoch})
+        if self.train_start_time is not None: # when resuming from middle of epoch, variable stays none
+            train_time = time.time() - self.train_start_time
+            if self.log_wandb and self.trainer.is_global_zero:
+                wandb.log({"train_epoch_time": train_time, "epoch": self.current_epoch})
 
     def on_validation_epoch_start(self):
         self.val_start_time = time.time()
-        if self.log_wandb:
+        if self.log_wandb and self.trainer.is_global_zero:
             train_loss = self.trainer.callback_metrics["train_loss"].item()
             wandb.log({"train_loss_epoch": train_loss, "epoch": self.current_epoch})
 
     def on_validation_epoch_end(self):
-        val_time = time.time() - self.val_start_time
-        if self.log_wandb:
-            wandb.log({"val_epoch_time": val_time, "epoch": self.current_epoch})
+        if self.val_start_time is not None:
+            val_time = time.time() - self.val_start_time
+            if self.log_wandb and self.trainer.is_global_zero:
+                wandb.log({"val_epoch_time": val_time, "epoch": self.current_epoch})
 
         fields = self.data_cfg["fields"]
         if self.validation_sample is None:
@@ -192,7 +194,7 @@ class ForecastModule(L.LightningModule):
         target_sample = targets[0] # T, C, H, W
         pred_sample = predictions[0] # T, C, H, W
 
-        if self.log_wandb:
+        if self.log_wandb and self.trainer.is_global_zero:
             try:
                 sdf_idx = fields.index("dfun")
                 target_sdfs = wandb_sdf_plotter(target_sample[:,sdf_idx,:,:])
@@ -243,6 +245,6 @@ class ForecastModule(L.LightningModule):
         plt.close("all")
         self.validation_outputs = []
 
-        if self.log_wandb:
+        if self.log_wandb and self.trainer.is_global_zero:
             val_loss = self.trainer.callback_metrics["val_loss"].item()
             wandb.log({"val_loss_epoch": val_loss, "epoch": self.current_epoch})

@@ -1,5 +1,6 @@
 import os
 import pprint
+import time
 import signal
 
 import hydra
@@ -9,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 from lightning import seed_everything, Trainer
 from lightning.pytorch.loggers import CSVLogger
-from lightning.pytorch.callbacks import ModelSummary
+from lightning.pytorch.callbacks import ModelSummary, Callback
 from lightning.pytorch.plugins.environments import SLURMEnvironment
 
 from bubbleformer.data import BubblemlForecast
@@ -26,6 +27,40 @@ def is_leader_process():
             return True
     else:
         return os.getenv("SLURM_PROCID") == "0"
+
+
+class PreemptionCheckpointCallback(Callback):
+    """
+    Tries to save a checkpoint when a SIGTERM signal is received.
+    Args:
+        checkpoint_path: Path to save the checkpoint.
+    """
+    def __init__(self, checkpoint_path="preemption_checkpoint.ckpt"):
+        super().__init__()
+        self.checkpoint_path = checkpoint_path
+        self.already_handled = False
+
+    def setup(self, trainer, pl_module, stage: str) -> None:
+        self.trainer = trainer
+        # Register the signal handler for SIGTERM in case of job preemption due to paid job
+        signal.signal(signal.SIGTERM, self.handle_preemption)
+
+    def handle_preemption(self, signum, frame):
+        """
+        Handle the SIGTERM signal.
+        """
+        if self.already_handled:
+            return
+        self.already_handled = True
+        try:
+            # Save the checkpoint. Use trainer.save_checkpoint if accessible.
+            # Note: You might need to call this on the main thread.
+            self.trainer.save_checkpoint(self.checkpoint_path)
+            print(f"Due to preemption Checkpoint saved to {self.checkpoint_path}.")
+        except Exception as e:
+            print(f"Failed to save checkpoint: {e}")
+        # Optionally, delay a bit to ensure the checkpoint save finishes.
+        time.sleep(5)
 
 @hydra.main(version_base=None, config_path="../bubbleformer/config", config_name="default")
 def main(cfg: DictConfig) -> None:
@@ -50,9 +85,12 @@ def main(cfg: DictConfig) -> None:
         )
         params["log_dir"] = os.path.join(cfg.log_dir, log_id)
         os.makedirs(params["log_dir"], exist_ok=True)
+        preempt_ckpt_path = params["log_dir"] + "/hpc_ckpt_1.ckpt"
     else:
         log_id = cfg.checkpoint_path.split("/")[-2]
         params["log_dir"] = "/".join(cfg.checkpoint_path.split("/")[:-1])
+        preempt_ckpt_num = int(cfg.checkpoint_path.split("_")[-1][:-5]) + 1
+        preempt_ckpt_path = params["log_dir"] + "/hpc_ckpt_" + str(preempt_ckpt_num) + ".ckpt"
 
     logger = CSVLogger(save_dir=params["log_dir"])
 
@@ -110,7 +148,7 @@ def main(cfg: DictConfig) -> None:
         limit_train_batches=500,
         limit_val_batches=50,
         num_sanity_val_steps=0,
-        callbacks=[ModelSummary(max_depth=-1)]
+        callbacks=[ModelSummary(max_depth=-1), PreemptionCheckpointCallback(preempt_ckpt_path)]
     )
 
     if is_leader_process():
