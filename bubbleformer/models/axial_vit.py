@@ -58,6 +58,7 @@ class AViT(nn.Module):
 
     Args:
         fields (int): Number of fields
+        time_window (int): Number of time steps
         patch_size (int): Size of the square patch
         embed_dim (int): Dimension of the embedding
         num_heads (int): Number of attention heads
@@ -132,6 +133,7 @@ class AViTSpatial(nn.Module):
     Model that does only spatial attention blocks.
     Args:
         fields (int): Number of fields
+        time_window (int): Number of time steps
         patch_size (int): Size of the square patch
         embed_dim (int): Dimension of the embedding
         num_heads (int): Number of attention heads
@@ -193,6 +195,81 @@ class AViTSpatial(nn.Module):
             x = blk(x)
 
         # Decode
+        x = self.debed(x)
+        x = rearrange(x, "(b t) c h w -> b t c h w", t=t)
+
+        return x
+
+@register_model("avit_temporal_only")
+class AViTTemporal(nn.Module):
+    """
+    Model that does only temporal attention blocks.
+    Args:
+        fields (int): Number of fields
+        time_window (int): Number of time steps
+        patch_size (int): Size of the square patch
+        embed_dim (int): Dimension of the embedding
+        num_heads (int): Number of attention heads
+        processor_blocks (int): Number of processor blocks
+        drop_path (float): Dropout rate
+    """
+    def __init__(
+        self,
+        fields: int = 3,
+        time_window: int = 5,
+        patch_size: int = 16,
+        embed_dim: int = 768,
+        num_heads: int = 12,
+        processor_blocks: int = 12,
+        drop_path: int = 0.2,
+    ):
+        super().__init__()
+        self.drop_path = drop_path
+        self.dp = np.linspace(0, drop_path, processor_blocks)
+        # Hierarchical Patch Embedding
+        self.embed = HMLPEmbed(
+            patch_size=patch_size,
+            in_channels=fields,
+            embed_dim=embed_dim,
+        )
+        # Factored spacetime block with (space/time axial attention)
+        self.blocks = nn.ModuleList(
+            [
+                TemporalAttentionBlock(
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    drop_path=self.dp[i]
+                )
+                for i in range(processor_blocks)
+            ]
+        )
+        # Patch Debedding
+        self.debed = HMLPDebed(
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            out_channels=fields
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x (torch.Tensor): Input tensor of shape (B, T, C, H, W)
+        Returns:
+            torch.Tensor: Output tensor of shape (B, T, C, H, W)
+        """
+        _, t, _, _, _ = x.shape
+
+        # Encode
+        x = rearrange(x, "b t c h w -> (b t) c h w")
+        x = self.embed(x)
+        x = rearrange(x, "(b t) c h w -> b t c h w", t=t)
+
+        # Process
+        for blk in self.blocks:
+            x = blk(x)
+
+        # Decode
+        x = rearrange(x, "b t c h w -> (b t) c h w")
         x = self.debed(x)
         x = rearrange(x, "(b t) c h w -> b t c h w", t=t)
 

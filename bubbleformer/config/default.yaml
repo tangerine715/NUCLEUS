@@ -14,12 +14,11 @@ use_wandb: True
 wandb_tags:
   - baseline
   - relative_l2_loss
-  - AViT-SpatialAttnOnly
+  - AViT-TemporalAttnOnly
   - PB-Saturated
-
 defaults:
   - _self_
   - data_cfg: poolboiling_saturated
-  - model_cfg: avit_spatial_small
+  - model_cfg: avit_temporal_small
   - optim_cfg: adamw
   - scheduler_cfg: cosine_warmup

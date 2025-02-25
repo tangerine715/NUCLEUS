@@ -49,6 +49,7 @@ class ForecastModule(L.LightningModule):
         self.model_cfg["params"]["fields"] = len(self.data_cfg["fields"])
         self.model_cfg["params"]["time_window"] = self.data_cfg["time_window"]
         self.model = get_model(self.model_cfg["name"], **self.model_cfg["params"])
+        #self.model = torch.compile(self.model)
 
         self.save_hyperparameters()
         self.t_max = None
