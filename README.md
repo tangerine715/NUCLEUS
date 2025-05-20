@@ -1,25 +1,33 @@
 # Bubbleformer
 
-A deep learning library for training foundation models on the [**BubbleML 2.0**](#bubbleml-20-dataset) dataset, focusing on boiling phenomena—an inherently chaotic, multiphase process central to energy and thermal systems. Bubbleformer is a transformer-based spatiotemporal model that forecasts stable and long-range boiling dynamics (including nucleation, interface evolution, and heat transfer) without dependence on simulation data during inference.
+A deep learning library for training foundation models on the BubbleML 2.0 dataset, focusing on boiling phenomena—an inherently chaotic, multiphase process central to energy and thermal systems.
 
 ![Bubbleformer Overview](media/paper_overview.png)
 *Figure 1: Overview of BubbleML 2.0 dataset and Bubbleformer downstream tasks*
 
 ## Overview
 
-Bubbleformer is a transformer-based model that learns to forecast full field boiling dynamics including temperature, velocity, and signed distance functions representing bubble interfaces, setting a new benchmark for ML-based boiling physics. The model makes three core contributions:
+Bubbleformer is a transformer-based spatiotemporal model that forecasts stable and long-range boiling dynamics (including nucleation, interface evolution, and heat transfer) without dependence on simulation data during inference. The project combines:
+
+1. **Bubbleformer**: A novel transformer architecture for forecasting multiphase fluid dynamics
+2. **BubbleML 2.0**: A comprehensive dataset of boiling simulations across diverse fluids and configurations
+
+Together, they enable machine learning models to generalize across different fluids, boiling regimes, and physical configurations, setting new benchmarks for ML-based modeling of complex thermophysical systems.
+
+## Bubbleformer Model
+
+Bubbleformer makes three core contributions to the field:
 
 1. **Beyond prediction to forecasting**
    - Operates directly on full 5D spatiotemporal tensors while preserving temporal dependencies
    - Learns nucleation dynamics end-to-end, enabling long-range forecasting
-   - Unlike prior models, requires no compressed time representations or injected future bubble positions
+   - Requires no compressed time representations or injected future bubble positions
 
 2. **Generalizing across fluids and flow regimes**
    - Conditions on thermophysical parameters for cross-scenario generalization
    - Handles diverse fluids (cryogenics, refrigerants, dielectrics)
    - Supports multiple boiling configurations (pool/flow boiling) and geometries (single/double-sided heaters)
    - Covers all flow regimes from bubbly to annular until dryout
-   - Trained on [**BubbleML 2.0**](#bubbleml-20-dataset) - the most comprehensive boiling dataset to date
 
 3. **Physics-based evaluation**
    - Introduces interpretable metrics beyond pixel-wise error:
@@ -28,19 +36,16 @@ Bubbleformer is a transformer-based model that learns to forecast full field boi
      - Mass conservation
    - Evaluates physical correctness in chaotic systems
 
-It sets new benchmarks on both prediction and forecasting tasks in [**BubbleML 2.0**](#bubbleml-20-dataset), offering a significant step toward practical, generalizable ML surrogates for multiphase transport.
+### Model Architecture
 
-## Key Features
+The primary models available in Bubbleformer are:
 
-- Transformer-based architectures optimized for fluid dynamics prediction
-- Support for axial vision transformers (AViT) with factored spacetime blocks
-- Data handling for HDF5 BubbleML+ BubbleML 2.0 fluid dynamics datasets
-- Training and inference pipelines with PyTorch Lightning
-- Visualization tools for fluid dynamics predictions
+- **AViT** (Axial Vision Transformer): A transformer-based model with factored spacetime blocks
+- **UNet** (Modern UNet): A UNet architecture for spatial-temporal prediction
 
 ## BubbleML 2.0 Dataset
 
-BubbleML 2.0 significantly expands the original BubbleML dataset with new fluids, boiling configurations, and flow regimes, enabling comprehensive study of generalization across thermophysical conditions and geometries.
+BubbleML 2.0 is the most comprehensive boiling dataset to date, significantly expanding the original BubbleML with new fluids, boiling configurations, and flow regimes.
 
 ### Key Features
 
@@ -52,7 +57,7 @@ BubbleML 2.0 significantly expands the original BubbleML dataset with new fluids
     - R-515B (refrigerant)
     - LN$_2$ (cryogen)
 
-- **New experimental conditions**:
+- **Experimental conditions**:
   - Constant heat flux boundary conditions
   - Double-sided heater configurations
   - Full range of flow regimes (bubbly, slug, annular until dryout)
@@ -77,8 +82,6 @@ BubbleML 2.0 significantly expands the original BubbleML dataset with new fluids
 For additional details on boundary conditions, numerical methods, and experimental validation, please refer to the bubbleformer paper Appendix B.
 
 ## Installation
-
-### Using conda and pip
 
 ```bash
 conda env create -f env/bubbleformer_gpu.yaml
@@ -136,10 +139,3 @@ python scripts/inference.py --model_path /path/to/model --data_path /path/to/dat
 ```bash
 jupyter notebook scripts/inference_autoregressive.ipynb
 ```
-
-## Models
-
-The primary models available in Bubbleformer are:
-
-- **AViT** (Axial Vision Transformer): A transformer-based model with factored spacetime blocks
-- **UNet** (Modern UNet): A UNet architecture for spatial-temporal prediction
