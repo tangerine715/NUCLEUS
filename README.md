@@ -83,6 +83,8 @@ For additional details on boundary conditions, numerical methods, and experiment
 
 ## Installation
 
+You can use [uv](https://github.com/astral-sh/uv) to setup the python environment and install dependencies.
+
 ```bash
 uv venv
 source .venv/bin/activate
