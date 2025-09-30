@@ -84,10 +84,10 @@ For additional details on boundary conditions, numerical methods, and experiment
 ## Installation
 
 ```bash
-conda env create -f env/bubbleformer_gpu.yaml
-conda activate bubbleformer
-pip install -r env/requirements.txt
-pip install -e .
+uv venv
+source .venv/bin/activate
+uv sync
+uv pip install -e .
 ```
 
 ## Repository Structure

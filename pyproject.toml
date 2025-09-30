@@ -2,6 +2,52 @@
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
+[project]
+name = "bubbleformer"
+version = "0.0.0"
+description = "Train Foundational Models om BubbleML"
+authors = [
+    { name="Sheikh Md Shakeel Hassan", email="sheikhh1@umd.edu" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "torch==2.5.0",
+    "torchvision",
+    "h5py",
+    "hydra-core",
+    "lightning",
+    "wandb",
+    "timm",
+    "einops",
+    "opencv-python",
+    "matplotlib",
+    "lightning",
+    "wandb",
+    "black",
+    "lion-pytorch"
+]
+
+[tool.uv.sources]
+torch = [
+  # For developing on macos, need cpu torch
+  { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+  { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+  { index = "pytorch-cpu", marker = "sys_platform == 'darwin'" },
+  { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.black]
 line-length = 100
 target-version = ['py310']
