@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling >= 1.26"]
+build-backend = "hatchling.build"
 
 [project]
 name = "bubbleformer"
@@ -26,6 +26,10 @@ dependencies = [
     "black",
     "lion-pytorch"
 ]
+
+# Usually stuff is expected to be in `src/bubbleformer/`
+[tool.setuptools.packages.find]
+where = ["bubbleformer"]
 
 [tool.uv.sources]
 torch = [
