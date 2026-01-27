@@ -26,12 +26,13 @@ class TemporalAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
 
-        self.input_head = nn.Linear(embed_dim, 3 * embed_dim)
-        self.output_head = nn.Linear(embed_dim, embed_dim)
-        self.qnorm = nn.LayerNorm(self.head_dim)
-        self.knorm = nn.LayerNorm(self.head_dim)
+        self.input_head = nn.Linear(embed_dim, 3 * embed_dim, dtype=torch.bfloat16)
+        self.output_head = nn.Linear(embed_dim, embed_dim, dtype=torch.bfloat16)
+        self.qnorm = nn.LayerNorm(self.head_dim, dtype=torch.bfloat16)
+        self.knorm = nn.LayerNorm(self.head_dim, dtype=torch.bfloat16)
         
         self.rotary_emb = RotaryEmbedding(dim=32)
+        self.work_dtype = torch.bfloat16
 
     def forward(self, x):
         """
@@ -42,7 +43,7 @@ class TemporalAttention(nn.Module):
         """
         batch_size, t, h, w, c = x.shape
         inp = x.clone()
-        x = self.input_head(x)
+        x = self.input_head(x.to(self.work_dtype))
         x = x.view(batch_size, t, h, w, self.num_heads, 3 * self.head_dim)
         x = rearrange(x, "b t h w heads head_dim -> (b h w) heads t head_dim").contiguous()
         q, k, v = x.tensor_split(3, dim=-1)
@@ -57,5 +58,5 @@ class TemporalAttention(nn.Module):
         x = rearrange(x, "(b h w) num_heads t head_dim -> b t h w (num_heads head_dim)", 
                       t=t, h=h, w=w).contiguous()
         
-        x = self.output_head(x)
+        x = self.output_head(x).to(torch.float32)
         return x

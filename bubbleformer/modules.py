@@ -48,7 +48,9 @@ class ForecastModule(L.LightningModule):
             self.normalization_constants = normalization_constants
         self.log_wandb = log_wandb
 
-        self.criterion = L1Loss() #LpLoss(d=2, p=2, reduce_dims=[0,1,2], reductions=["mean", "mean", "sum"])
+        # Note: the velocities tend to be smaller, so we give it a higher weight in the loss
+        self.criterion = L1Loss(scales=[1, 1, 1, 5])
+        
         self.model_cfg["params"]["input_fields"] = len(self.data_cfg["input_fields"])
         self.model_cfg["params"]["output_fields"] = len(self.data_cfg["output_fields"])
         self.model_cfg["params"]["time_window"] = self.data_cfg["time_window"]
@@ -362,8 +364,7 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
 
         # Add gaussian noise to the input
         if random.random() < 0.4:
-            # Since the data is unnormalized, we can use fairly large noise scales.
-            scale = random.choice([0.001, 0.01, 0.05, 0.1, 0.2, 0.5, 1, 2, 5])
+            scale = random.choice([0.001, 0.01, 0.05, 0.1, 0.2, 0.5, 1])
             inp = inp + torch.normal(0, scale, inp.shape, device=inp.device)
 
         pred, moe_outputs = self.model(inp, cond)
@@ -386,7 +387,7 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         batch: Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
         batch_idx: int
     ) -> torch.Tensor:
-        inp, tgt, cond = batch
+        inp, tgt, cond = batch.input, batch.target, batch.fluid_params_tensor
         pred, _ = self.model(inp, cond)
         loss = self.criterion(pred, tgt)
         if batch_idx == 0:

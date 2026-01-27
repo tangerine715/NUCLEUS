@@ -58,12 +58,12 @@ class SpatialNeighborhoodAttention(nn.Module):
         q, k, v = map(
             lambda qkv: rearrange(qkv, "bt heads h w head_dim -> bt h w heads head_dim").contiguous(), [q, k, v]
         )
-
+        
         output = natten.na2d(
             q,
             k,
             v,
-            kernel_size=3,
+            kernel_size=5,
             stride=1,
             dilation=1,   
         )

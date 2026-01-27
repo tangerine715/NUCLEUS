@@ -17,7 +17,7 @@ from lightning.pytorch.plugins.environments import SLURMEnvironment
 
 from bubbleformer.data.batching import collate
 from bubbleformer.data import BubbleForecast, DownsampledBubbleForecast
-from bubbleformer.moe_modules import MoEForecastModule, MoEConditionedForecastModule
+from bubbleformer.modules import MoEConditionedForecastModule
 from bubbleformer.utils.set_fp32_precision import set_fp32_precision
 
 def is_leader_process():
@@ -106,7 +106,6 @@ def main(cfg: DictConfig) -> None:
                 start_time=cfg.data_cfg.start_time,
                 return_fluid_params=cfg.data_cfg.return_fluid_params,
             )
-    normalization_constants = train_dataset.normalize()
     val_dataset = DownsampledBubbleForecast(
                 filenames=cfg.data_cfg.val_paths,
                 input_fields=cfg.data_cfg.input_fields,
@@ -117,9 +116,6 @@ def main(cfg: DictConfig) -> None:
                 start_time=cfg.data_cfg.start_time,
                 return_fluid_params=cfg.data_cfg.return_fluid_params,
             )
-    val_dataset.normalize(*normalization_constants)
-    diff_term = normalization_constants[0]
-    div_term = normalization_constants[1]
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -146,7 +142,6 @@ def main(cfg: DictConfig) -> None:
         optim_cfg=cfg.optim_cfg,
         scheduler_cfg=cfg.scheduler_cfg,
         log_wandb=cfg.use_wandb,
-        normalization_constants=(diff_term, div_term),
     )
 
     progress_bar = RichProgressBar(

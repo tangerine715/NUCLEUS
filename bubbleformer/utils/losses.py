@@ -94,13 +94,14 @@ class LpLoss(nn.Module):
         return diff
 
 class L1Loss(nn.Module):
-    def __init__(self):
+    def __init__(self, scales: List[float]):
         super().__init__()
         self.loss = nn.L1Loss(reduction="mean")
+        self.scales = scales
     
     def forward(self, pred, target):
         channels = pred.shape[2]
         loss = 0
         for c in range(channels):
-            loss += self.loss(pred[:, :, c, :, :], target[:, :, c, :, :])
+            loss += self.loss(pred[:, :, c, :, :], target[:, :, c, :, :]) * self.scales[c]
         return loss / channels

@@ -72,7 +72,7 @@ class DownsampledBubbleForecast(Dataset):
                     field_data = F.interpolate(
                         field_data.unsqueeze(1),
                         size=(new_h, new_w),
-                        mode="nearest"
+                        mode="bicubic"
                     ).squeeze(1)
                 d[field] = field_data
             data.append(d)
