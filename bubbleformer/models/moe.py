@@ -9,15 +9,16 @@ from bubbleformer.layers import (
     HMLPEmbed, 
     HMLPDebed,
     FiLMMLP,
-    TransformerMoEBlock
+    TransformerMoEBlock,
+    TransformerAxialMoEBlock,
+    TransformerNeighborMoEBlock
 )
 from bubbleformer.data.batching import CollatedBatch
 from ._api import register_model
 
 __all__ = ["ViTMoE"]
 
-@register_model("vit_moe")
-class ViTMoE(nn.Module):
+class MoEBase(nn.Module):
     def __init__(
         self,
         input_fields: int,
@@ -125,3 +126,113 @@ class ViTMoE(nn.Module):
         x = x + input[:, -1].unsqueeze(1).expand(-1, T, -1, -1, -1)
         
         return x, moe_outputs
+    
+@register_model("vit_moe")
+class ViTMoE(MoEBase):
+    def __init__(
+        self,
+        input_fields: int,
+        output_fields: int,
+        time_window: int,
+        patch_size: int,
+        embed_dim: int,
+        num_heads: int,
+        processor_blocks: int,
+        num_fluid_params: int,
+        num_experts: int,
+        topk: int,
+        load_balance_loss_weight: float,
+    ):
+        super().__init__(
+            input_fields=input_fields,
+            output_fields=output_fields,
+            time_window=time_window,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            processor_blocks=processor_blocks,
+            num_fluid_params=num_fluid_params,
+            num_experts=num_experts,
+            topk=topk,
+            load_balance_loss_weight=load_balance_loss_weight,
+        )
+
+@register_model("axial_moe")
+class AxialMoE(MoEBase):
+    def __init__(
+        self,
+        input_fields: int,
+        output_fields: int,
+        time_window: int,
+        patch_size: int,
+        embed_dim: int,
+        num_heads: int,
+        processor_blocks: int,
+        num_fluid_params: int,
+        num_experts: int,
+        topk: int,
+        load_balance_loss_weight: float,
+    ):
+        super().__init__(
+            input_fields=input_fields,
+            output_fields=output_fields,
+            time_window=time_window,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            processor_blocks=processor_blocks,
+            num_fluid_params=num_fluid_params,
+            num_experts=num_experts,
+            topk=topk,
+            load_balance_loss_weight=load_balance_loss_weight,
+        )
+        self.blocks = nn.ModuleList([
+            TransformerAxialMoEBlock(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                num_experts=num_experts,
+                topk=topk,
+                load_balance_loss_weight=load_balance_loss_weight,
+            )
+            for _ in range(processor_blocks)
+        ])
+
+@register_model("neighbor_moe")
+class NeighborMoE(MoEBase):
+    def __init__(
+        self,
+        input_fields: int,
+        output_fields: int,
+        time_window: int,
+        patch_size: int,
+        embed_dim: int,
+        num_heads: int,
+        processor_blocks: int,
+        num_fluid_params: int,
+        num_experts: int,
+        topk: int,
+        load_balance_loss_weight: float,
+    ):
+        super().__init__(
+            input_fields=input_fields,
+            output_fields=output_fields,
+            time_window=time_window,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            processor_blocks=processor_blocks,
+            num_fluid_params=num_fluid_params,
+            num_experts=num_experts,
+            topk=topk,
+            load_balance_loss_weight=load_balance_loss_weight,
+        )
+        self.blocks = nn.ModuleList([
+            TransformerNeighborMoEBlock(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                num_experts=num_experts,
+                topk=topk,
+                load_balance_loss_weight=load_balance_loss_weight,
+            )
+            for _ in range(processor_blocks)
+        ])

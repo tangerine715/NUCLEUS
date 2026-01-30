@@ -9,37 +9,33 @@ from bubbleformer.layers import (
     HMLPEmbed, 
     HMLPDebed, 
     FiLMMLP,
-    TransformerBlock
+    TransformerBlock,
+    TransformerAxialBlock,
+    TransformerNeighborBlock,
 )
 from bubbleformer.data.batching import CollatedBatch
 from ._api import register_model
 
 __all__ = ["ViT"]
 
-@register_model("vit")
-class ViT(nn.Module):
+class ViTBase(nn.Module):
     def __init__(
         self,
-        input_fields: int = 3,
-        output_fields: int = 3,
-        time_window: int = 12,
-        patch_size: int = 16,
-        embed_dim: int = 768,
-        num_heads: int = 12,
-        processor_blocks: int = 12,
-        num_fluid_params: int = 8,
+        input_fields: int,
+        output_fields: int,
+        time_window: int,
+        patch_size: int,
+        embed_dim: int,
+        num_heads: int,
+        processor_blocks: int,
+        num_fluid_params: int,
     ):
-        """
-        Args:
-            input_fields (int): Number of input fields
-            output_fields (int): Number of output fields
-            time_window (int): Number of time steps
-            patch_size (int): Size of the square patch
-            embed_dim (int): Dimension of the embedding
-            num_heads (int): Number of attention heads
-            processor_blocks (int): Number of processor blocks
-            num_fluid_params (int): Number of fluid parameters for conditioning
-        """
+        super().__init__()
+        self.embed = HMLPEmbed(
+            patch_size=patch_size,
+            in_channels=input_fields,
+            embed_dim=embed_dim,
+        )
         super().__init__()
         self.embed = HMLPEmbed(
             patch_size=patch_size,
@@ -66,7 +62,7 @@ class ViT(nn.Module):
         self.sdf_proj = nn.Conv2d(embed_dim, 1, kernel_size=3, padding=1, dtype=torch.float32)
         self.temp_proj = nn.Conv2d(embed_dim, 1, kernel_size=3, padding=1, dtype=torch.float32)
         self.vel_proj = nn.Conv2d(embed_dim, 2, kernel_size=3, padding=1, dtype=torch.float32)
-        
+
     def forward(self, batch: CollatedBatch) -> torch.Tensor:
         """
         x: (B, T, C, H, W)
@@ -86,9 +82,6 @@ class ViT(nn.Module):
             
         embed = x.clone()
 
-        # Permute to better order for attention (B, T, H, W, C)
-        # TODO: IDK if input should be in this format for the embedding or not...
-        # I think conv's do support NHWC layout.
         x = rearrange(x, "b t c h w -> b t h w c").contiguous()
 
         # Apply FiLM conditioning on the embeddings
@@ -110,9 +103,6 @@ class ViT(nn.Module):
         x = self.debed(x)
         x = nn.functional.gelu(x)
         
-        # convert to float32 for high-precision output projection
-        x = x.to(torch.float32)
-        
         # project to output fields
         sdf = self.sdf_proj(x)
         temp = self.temp_proj(x)
@@ -126,3 +116,89 @@ class ViT(nn.Module):
         x = x + input[:, -1].unsqueeze(1).expand(-1, T, -1, -1, -1)
         
         return x
+        
+@register_model("vit")
+class ViT(ViTBase):
+    def __init__(
+        self,
+        input_fields: int,
+        output_fields: int,
+        time_window: int,
+        patch_size: int,
+        embed_dim: int,
+        num_heads: int,
+        processor_blocks: int,
+        num_fluid_params: int,
+    ):
+        super().__init__(
+            input_fields=input_fields,
+            output_fields=output_fields,
+            time_window=time_window,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            processor_blocks=processor_blocks,
+            num_fluid_params=num_fluid_params,
+        )
+
+@register_model("axial_vit")
+class AxialViT(ViTBase):
+    def __init__(
+        self,
+        input_fields: int,
+        output_fields: int,
+        time_window: int,
+        patch_size: int,
+        embed_dim: int,
+        num_heads: int,
+        processor_blocks: int,
+        num_fluid_params: int,
+    ):
+        super().__init__(
+            input_fields=input_fields,
+            output_fields=output_fields,
+            time_window=time_window,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            processor_blocks=processor_blocks,
+            num_fluid_params=num_fluid_params,
+        )
+        self.blocks = nn.ModuleList([
+            TransformerAxialBlock(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+            )
+            for _ in range(processor_blocks)
+        ])
+    
+@register_model("neighbor_vit")
+class NeighborViT(ViTBase):
+    def __init__(
+        self,
+        input_fields: int,
+        output_fields: int,
+        time_window: int,
+        patch_size: int,
+        embed_dim: int,
+        num_heads: int,
+        processor_blocks: int,
+        num_fluid_params: int,
+    ):
+        super().__init__(
+            input_fields=input_fields,
+            output_fields=output_fields,
+            time_window=time_window,
+            patch_size=patch_size,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            processor_blocks=processor_blocks,
+            num_fluid_params=num_fluid_params,
+        )
+        self.blocks = nn.ModuleList([
+            TransformerNeighborBlock(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+            )
+            for _ in range(processor_blocks)
+        ])

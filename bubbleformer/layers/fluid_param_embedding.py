@@ -65,7 +65,6 @@ class FluidParamEmbedding(nn.Module):
             param_values = torch.tensor(param_values, dtype=self.base_embedding.weight.dtype, device=self.base_embedding.weight.device)
             base_embedding = self.base_embedding(param_indices)
             film_embedding = self.film_mlp(base_embedding[:, None, None, None, :], param_values.unsqueeze(-1)).squeeze()
-            print(base_embedding.shape, film_embedding.shape)
             param_embedding[batch_idx] = film_embedding.sum(0)
 
         return param_embedding
