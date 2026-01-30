@@ -1,3 +1,4 @@
+from .neighbor_moe_fluid_embed import NeighborMoEFluidEmbed
 from .neighbor_moe import NeighborMoE
 from .neighbor_vit import NeighborViT
 from .axial_vit import AxialViT

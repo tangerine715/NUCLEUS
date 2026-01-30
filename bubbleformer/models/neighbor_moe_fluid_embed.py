@@ -5,54 +5,50 @@ import numpy as np
 from einops import rearrange
 from torch.profiler import record_function
 
+from bubbleformer.data.batching import CollatedBatch
 from bubbleformer.layers import (
     HMLPEmbed, 
-    HMLPDebed, 
+    HMLPDebed,
     FiLMMLP,
-    TransformerAxialBlock
+    TransformerNeighborMoEBlock
 )
-from bubbleformer.data.batching import CollatedBatch
+from bubbleformer.layers.fluid_param_embedding import FluidParamEmbedding
 from ._api import register_model
 
-__all__ = ["AxialViT"]
+__all__ = ["NeighborMoEFluidEmbed"]
 
-@register_model("axial_vit")
-class AxialViT(nn.Module):
+@register_model("neighbor_moe_fluid_embed")
+class NeighborMoEFluidEmbed(nn.Module):
     def __init__(
         self,
-        input_fields: int = 3,
-        output_fields: int = 3,
-        time_window: int = 12,
-        patch_size: int = 16,
-        embed_dim: int = 768,
-        num_heads: int = 12,
-        processor_blocks: int = 12,
-        num_fluid_params: int = 8,
+        input_fields: int,
+        output_fields: int,
+        time_window: int,
+        patch_size: int,
+        embed_dim: int,
+        num_heads: int,
+        processor_blocks: int,
+        num_fluid_params: int,
+        num_experts: int,
+        topk: int,
+        load_balance_loss_weight: float,
     ):
-        """
-        Args:
-            input_fields (int): Number of input fields
-            output_fields (int): Number of output fields
-            time_window (int): Number of time steps
-            patch_size (int): Size of the square patch
-            embed_dim (int): Dimension of the embedding
-            num_heads (int): Number of attention heads
-            processor_blocks (int): Number of processor blocks
-            num_fluid_params (int): Number of fluid parameters for conditioning
-        """
         super().__init__()
         self.embed = HMLPEmbed(
             patch_size=patch_size,
             in_channels=input_fields,
             embed_dim=embed_dim,
         )
-
-        self.film_embed = FiLMMLP(num_fluid_params, embed_dim)
-
+        
+        self.fluid_param_embed = FluidParamEmbedding(embed_dim)
+        
         self.blocks = nn.ModuleList([
-            TransformerAxialBlock(
+            TransformerNeighborMoEBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
+                num_experts=num_experts,
+                topk=topk,
+                load_balance_loss_weight=load_balance_loss_weight,
             )
             for _ in range(processor_blocks)
         ])
@@ -73,17 +69,20 @@ class AxialViT(nn.Module):
         fluid_params: (B, num_fluid_params)
         """
         x = batch.input
-        fluid_params = batch.fluid_params_tensor
         B, T, _, _, _ = x.shape
-        
+                
         input = x.clone()
+        assert input.dtype == torch.float32
+               
+        # embed the fluid params as a (B, 1, 1, 1, embed_dim) tensor
+        fluid_param_embedding = self.fluid_param_embed(batch.fluid_params_dict)[:, None, None, None, :]
 
         # Encode
         with record_function("encode"):
             x = rearrange(x, "b t c h w -> (b t) c h w")
             x = self.embed(x)
             x = rearrange(x, "(b t) c h w -> b t c h w", t=T)
-            
+
         embed = x.clone()
 
         # Permute to better order for attention (B, T, H, W, C)
@@ -91,15 +90,17 @@ class AxialViT(nn.Module):
         # I think conv's do support NHWC layout.
         x = rearrange(x, "b t c h w -> b t h w c").contiguous()
 
-        # Apply FiLM conditioning on the embeddings
-        with record_function("film_embed"):
-            x = self.film_embed(x, fluid_params)
+        x += fluid_param_embedding
 
-        # Attention blocks
+        # Attention blocks, tracking the MoE output for the routing losses
+        moe_outputs = []
         for idx, blk in enumerate(self.blocks):
             with record_function(f"block_{idx}"):
-               x = blk(x)
+               x, moe_output = blk(x)
+               moe_outputs.append(moe_output)
 
+        x += fluid_param_embedding
+        
         x = rearrange(x, "b t h w c -> b t c h w").contiguous()
         
         # Skip connection from patch embeddings
@@ -109,9 +110,6 @@ class AxialViT(nn.Module):
         x = rearrange(x, "b t c h w -> (b t) c h w")
         x = self.debed(x)
         x = nn.functional.gelu(x)
-        
-        # convert to float32 for high-precision output projection
-        x = x.to(torch.float32)
         
         # project to output fields
         sdf = self.sdf_proj(x)
@@ -123,6 +121,6 @@ class AxialViT(nn.Module):
         x = torch.cat((sdf, temp, vel), dim=2)
         
         # Skip connection from the last timestep of the original input
-        x = x + input[:, -1].unsqueeze(1).expand(-1, T, -1, -1, -1)        
+        x = x + input[:, -1].unsqueeze(1).expand(-1, T, -1, -1, -1)
         
-        return x
+        return x, moe_outputs

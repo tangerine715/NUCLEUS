@@ -41,6 +41,9 @@ class ForecastModule(L.LightningModule):
         normalization_constants: Tuple[List, List] = None
     ):
         super().__init__()
+        # whole model config to be saved to the checkpoint
+        self.save_hyperparameters()
+        
         self.model_cfg = OmegaConf.to_container(model_cfg, resolve=True)
         self.data_cfg = OmegaConf.to_container(data_cfg, resolve=True)
         self.optimizer_cfg = OmegaConf.to_container(optim_cfg, resolve=True)
@@ -261,7 +264,6 @@ class ForecastModule(L.LightningModule):
             except:
                 pass
 
-
 class ConditionedForecastModule(ForecastModule):
     """
     Module for training forecasting models with different
@@ -305,21 +307,16 @@ class ConditionedForecastModule(ForecastModule):
         batch: Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
         batch_idx: int
     ) -> torch.Tensor:
-        inp, tgt, cond = batch.input, batch.target, batch.fluid_params_tensor
-
-        # The input is [B, T, C, H, W]
-        # Randomly flip along the horizontal axis of the input and target.
+        
         if random.random() < 0.5:
-            inp = torch.fliplr(inp)
-            tgt = torch.fliplr(tgt)
-
-        # Add gaussian noise to the input
+            batch = batch.fliplr()
         if random.random() < 0.4:
             scale = random.choice([0.001, 0.01, 0.05, 0.1, 0.2, 0.5, 1])
-            inp = inp + torch.normal(0, scale, inp.shape, device=inp.device)
+            batch = batch.gaussian_noise(scale)
 
-        pred = self.model(inp, cond)
-        loss = self.criterion(pred, tgt)
+        inp = batch.get_input()
+        pred = self.model(inp)
+        loss = self.criterion(pred, batch.target)
         
         self.default_log_dict({
             "train_loss": loss,
@@ -333,14 +330,14 @@ class ConditionedForecastModule(ForecastModule):
         batch: Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
         batch_idx: int
     ) -> torch.Tensor:
-        inp, tgt, cond = batch.input, batch.target, batch.fluid_params_tensor
-        pred = self.model(inp, cond)
-        loss = self.criterion(pred, tgt)
+        inp = batch.get_input()
+        pred = self.model(inp)
+        loss = self.criterion(pred, batch.target)
         if batch_idx == 0:
-            self.validation_sample = (inp.detach(), tgt.detach(), pred.detach())
+            self.validation_sample = (inp.detach(), batch.target.detach(), pred.detach())
 
         self.default_log_dict({"val_loss": loss})
-
+    
         return loss
     
 class MoEConditionedForecastModule(ConditionedForecastModule):
@@ -367,22 +364,17 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         batch: CollatedBatch,
         batch_idx: int
     ) -> torch.Tensor:
-        inp, tgt, cond = batch.input, batch.target, batch.fluid_params_tensor
-
-        # The input is [B, T, C, H, W]
-        # Randomly flip along the horizontal axis of the input and target.
+        
         if random.random() < 0.5:
-            inp = torch.fliplr(inp)
-            tgt = torch.fliplr(tgt)
-
-        # Add gaussian noise to the input
+            batch = batch.fliplr()
         if random.random() < 0.4:
             scale = random.choice([0.001, 0.01, 0.05, 0.1, 0.2, 0.5, 1])
-            inp = inp + torch.normal(0, scale, inp.shape, device=inp.device)
+            batch = batch.gaussian_noise(scale)
 
-        pred, moe_outputs = self.model(inp, cond)
+        inp = batch.get_input()
+        pred, moe_outputs = self.model(inp)
 
-        data_loss = self.criterion(pred, tgt)
+        data_loss = self.criterion(pred, batch.target)
         routing_loss = sum(moe_output.load_balance_loss for moe_output in moe_outputs)
         loss = data_loss + routing_loss
 
@@ -400,11 +392,12 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         batch: Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
         batch_idx: int
     ) -> torch.Tensor:
-        inp, tgt, cond = batch.input, batch.target, batch.fluid_params_tensor
-        pred, _ = self.model(inp, cond)
-        loss = self.criterion(pred, tgt)
+
+        inp = batch.get_input()
+        pred, moe_outputs = self.model(inp)
+        loss = self.criterion(pred, batch.target)
         if batch_idx == 0:
-            self.validation_sample = (inp.detach(), tgt.detach(), pred.detach())
+            self.validation_sample = (inp.detach(), batch.target.detach(), pred.detach())
 
         self.default_log_dict({"val_loss": loss})
     

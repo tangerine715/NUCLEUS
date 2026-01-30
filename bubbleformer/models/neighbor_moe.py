@@ -11,6 +11,7 @@ from bubbleformer.layers import (
     FiLMMLP,
     TransformerNeighborMoEBlock
 )
+from bubbleformer.data.batching import CollatedBatch
 from ._api import register_model
 
 __all__ = ["NeighborMoE"]
@@ -61,16 +62,17 @@ class NeighborMoE(nn.Module):
         self.temp_proj = nn.Conv2d(embed_dim, 1, kernel_size=3, padding=1, dtype=torch.float32)
         self.vel_proj = nn.Conv2d(embed_dim, 2, kernel_size=3, padding=1, dtype=torch.float32)
         
-    def forward(self, x: torch.Tensor, fluid_params: torch.Tensor) -> torch.Tensor:
+    def forward(self, batch: CollatedBatch) -> torch.Tensor:
         """
         x: (B, T, C, H, W)
         fluid_params: (B, num_fluid_params)
         """
+        x = batch.input
+        fluid_params = batch.fluid_params_tensor
         B, T, _, _, _ = x.shape
         
         input = x.clone()
         assert input.dtype == torch.float32
-        assert fluid_params.dtype == torch.float32
 
         # Encode
         with record_function("encode"):

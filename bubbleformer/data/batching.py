@@ -1,6 +1,6 @@
 import dataclasses
 import torch
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional
 
 @dataclasses.dataclass
 class Data:
@@ -12,19 +12,64 @@ class Data:
     y_grid: torch.Tensor
     dx: torch.Tensor
     dy: torch.Tensor
+    rollout_steps: Optional[int] = None
 
 @dataclasses.dataclass
 class CollatedBatch:
     input: torch.Tensor
-    target: torch.Tensor
+    target: Optional[torch.Tensor]
     fluid_params_tensor: torch.Tensor
     fluid_params_dict: List[Dict]
     x_grid: torch.Tensor
     y_grid: torch.Tensor
     dx: torch.Tensor
     dy: torch.Tensor
+    rollout_steps: Optional[torch.Tensor] = None
     
-def make_data(input, target, fluid_params_tensor, fluid_params_dict, downsample_factor: int):
+    def get_input(self):
+        r"""
+        This returns a copy of self, but without the target data,
+        so this can be directly passed into the model as an input.
+        """
+        return CollatedBatch(
+            input=self.input,
+            target=None,
+            fluid_params_tensor=self.fluid_params_tensor,
+            fluid_params_dict=self.fluid_params_dict,
+            x_grid=self.x_grid,
+            y_grid=self.y_grid,
+            dx=self.dx,
+            dy=self.dy,
+            rollout_steps=self.rollout_steps
+        )
+        
+    def fliplr(self):
+        return CollatedBatch(
+            input=torch.fliplr(self.input),
+            target=torch.fliplr(self.target),
+            fluid_params_tensor=self.fluid_params_tensor,
+            fluid_params_dict=self.fluid_params_dict,
+            x_grid=self.x_grid,
+            y_grid=self.y_grid,
+            dx=self.dx,
+            dy=self.dy,
+            rollout_steps=self.rollout_steps
+        )
+        
+    def gaussian_noise(self, scale: float):
+        return CollatedBatch(
+            input=self.input + torch.normal(0, scale, self.input.shape, device=self.input.device),
+            target=self.target,
+            fluid_params_tensor=self.fluid_params_tensor,
+            fluid_params_dict=self.fluid_params_dict,
+            x_grid=self.x_grid,
+            y_grid=self.y_grid,
+            dx=self.dx,
+            dy=self.dy,
+            rollout_steps=self.rollout_steps
+        )
+    
+def make_data(input, target, fluid_params_tensor, fluid_params_dict, downsample_factor: int, rollout_steps: Optional[int] = None):
     dx = (fluid_params_dict["x_max"] - fluid_params_dict["x_min"]) / (fluid_params_dict["num_blocks_x"] * int(fluid_params_dict["nx_block"]))
     dy = (fluid_params_dict["y_max"] - fluid_params_dict["y_min"]) / (fluid_params_dict["num_blocks_y"] * int(fluid_params_dict["ny_block"]))
 
@@ -44,7 +89,8 @@ def make_data(input, target, fluid_params_tensor, fluid_params_dict, downsample_
         x_grid=x_grid,
         y_grid=y_grid,
         dx=dx,
-        dy=dy
+        dy=dy,
+        rollout_steps=rollout_steps
     )
 
 def collate(data: List[Data]):    
@@ -56,5 +102,5 @@ def collate(data: List[Data]):
         x_grid=torch.stack([d.x_grid for d in data]),
         y_grid=torch.stack([d.y_grid for d in data]),
         dx=torch.tensor([d.dx for d in data]),
-        dy=torch.tensor([d.dy for d in data])
+        dy=torch.tensor([d.dy for d in data]),
     )
