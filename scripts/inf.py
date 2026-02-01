@@ -6,7 +6,7 @@ from bubbleformer.models import get_model
 import hydra
 from omegaconf import DictConfig
 from bubbleformer.test import run_test, TestResults
-from bubbleformer.plot.plotting import plot_rollout
+from bubbleformer.plot.plotting import plot_rollout, plot_rollout_stability
 from bubbleformer.utils.set_fp32_precision import set_fp32_precision
 
 @hydra.main(version_base=None, config_path="../bubbleformer/config", config_name="default")
@@ -22,11 +22,13 @@ def main(cfg: DictConfig):
         "embed_dim": cfg.model_cfg.params.embed_dim,
         "processor_blocks": cfg.model_cfg.params.processor_blocks,
         "num_heads": cfg.model_cfg.params.num_heads,
-        "num_experts": cfg.model_cfg.params.num_experts,
-        "topk": cfg.model_cfg.params.topk,
-        "load_balance_loss_weight": cfg.model_cfg.params.load_balance_loss_weight,
         "num_fluid_params": cfg.model_cfg.params.num_fluid_params,
     }
+    
+    if cfg.model_cfg.params.get("num_experts", None) is not None:
+        model_kwargs["num_experts"] = cfg.model_cfg.params.num_experts
+        model_kwargs["topk"] = cfg.model_cfg.params.topk
+        model_kwargs["load_balance_loss_weight"] = cfg.model_cfg.params.load_balance_loss_weight
 
     model = get_model(model_name, **model_kwargs)
     model = model.cuda()
@@ -51,7 +53,7 @@ def main(cfg: DictConfig):
         save_dir = save_root / f"{setup}_{liquid}_{heater_temp}"
         save_dir.mkdir(parents=True, exist_ok=True)
         plot_rollout(save_dir, test_results.preds, test_results, step_size=20)
-        
+        plot_rollout_stability(save_dir, test_results.preds.squeeze(0), test_results.targets.squeeze(0))
         torch.save(test_results, save_dir / "test_results.pt")
 
 if __name__ == "__main__":
