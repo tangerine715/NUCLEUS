@@ -1,6 +1,7 @@
 import dataclasses
 import torch
 from typing import Dict, List, Optional
+from bubbleformer.utils.normalize import normalize, unnormalize
 
 @dataclasses.dataclass
 class Data:
@@ -25,6 +26,29 @@ class CollatedBatch:
     dx: torch.Tensor
     dy: torch.Tensor
     rollout_steps: Optional[torch.Tensor] = None
+    
+    def to(self, device: torch.device):
+        return CollatedBatch(
+            input=self.input.to(device),
+            target=self.target.to(device) if self.target is not None else None,
+            fluid_params_tensor=self.fluid_params_tensor.to(device),
+            fluid_params_dict=self.fluid_params_dict,
+            x_grid=self.x_grid.to(device),
+            y_grid=self.y_grid.to(device),
+            dx=self.dx.to(device),
+            dy=self.dy.to(device),
+            rollout_steps=self.rollout_steps
+        )
+        
+    def detach(self):
+        return CollatedBatch(
+            input=self.input.detach(),
+            target=self.target.detach() if self.target is not None else None,
+            fluid_params_tensor=self.fluid_params_tensor.detach(),
+            fluid_params_dict=self.fluid_params_dict,
+            x_grid=self.x_grid.detach(),
+            y_grid=self.y_grid.detach(),
+        )
     
     def get_input(self):
         r"""
@@ -60,6 +84,39 @@ class CollatedBatch:
         return CollatedBatch(
             input=self.input + torch.normal(0, scale, self.input.shape, device=self.input.device),
             target=self.target,
+            fluid_params_tensor=self.fluid_params_tensor,
+            fluid_params_dict=self.fluid_params_dict,
+            x_grid=self.x_grid,
+            y_grid=self.y_grid,
+            dx=self.dx,
+            dy=self.dy,
+            rollout_steps=self.rollout_steps
+        )
+        
+    def get_temps(self):
+        bulk_temp = torch.tensor([d["bulk_temp"] for d in self.fluid_params_dict], device=self.input.device)
+        heater_temp = torch.tensor([d["heater"]["wallTemp"] for d in self.fluid_params_dict], device=self.input.device)
+        return bulk_temp, heater_temp
+
+    def normalize(self):
+        bulk_temp, heater_temp = self.get_temps()
+        return CollatedBatch(
+            input=normalize(self.input, bulk_temp, heater_temp),
+            target=normalize(self.target, bulk_temp, heater_temp),
+            fluid_params_tensor=self.fluid_params_tensor,
+            fluid_params_dict=self.fluid_params_dict,
+            x_grid=self.x_grid,
+            y_grid=self.y_grid,
+            dx=self.dx,
+            dy=self.dy,
+            rollout_steps=self.rollout_steps
+        )
+    
+    def unnormalize(self):
+        bulk_temp, heater_temp = self.get_temps()
+        return CollatedBatch(
+            input=unnormalize(self.input, bulk_temp, heater_temp),
+            target=unnormalize(self.target, bulk_temp, heater_temp),
             fluid_params_tensor=self.fluid_params_tensor,
             fluid_params_dict=self.fluid_params_dict,
             x_grid=self.x_grid,

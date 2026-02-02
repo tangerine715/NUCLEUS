@@ -52,8 +52,7 @@ class ForecastModule(L.LightningModule):
             self.normalization_constants = normalization_constants
         self.log_wandb = log_wandb
 
-        # Note: the velocities tend to be smaller, so we give it a higher weight in the loss
-        self.criterion = L1Loss(scales=[1, 1, 1, 5])
+        self.criterion = L1Loss(scales=[1, 1, 1, 1])
         
         self.model_cfg["params"]["input_fields"] = len(self.data_cfg["input_fields"])
         self.model_cfg["params"]["output_fields"] = len(self.data_cfg["output_fields"])
@@ -308,6 +307,8 @@ class ConditionedForecastModule(ForecastModule):
         batch_idx: int
     ) -> torch.Tensor:
         
+        # normalize the input and target during training.
+        batch = batch.normalize()
         if random.random() < 0.5:
             batch = batch.fliplr()
         if random.random() < 0.4:
@@ -327,14 +328,15 @@ class ConditionedForecastModule(ForecastModule):
 
     def validation_step(
         self,
-        batch: Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
+        batch: CollatedBatch,
         batch_idx: int
     ) -> torch.Tensor:
+        batch = batch.normalize()
         inp = batch.get_input()
         pred = self.model(inp)
         loss = self.criterion(pred, batch.target)
         if batch_idx == 0:
-            self.validation_sample = (inp.detach(), batch.target.detach(), pred.detach())
+            self.validation_sample = (batch.input.detach(), batch.target.detach(), pred.detach())
 
         self.default_log_dict({"val_loss": loss})
     
@@ -365,6 +367,8 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         batch_idx: int
     ) -> torch.Tensor:
         
+        # normalize the input and target during training.
+        batch = batch.normalize()
         if random.random() < 0.5:
             batch = batch.fliplr()
         if random.random() < 0.4:
@@ -389,15 +393,15 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
 
     def validation_step(
         self,
-        batch: Tuple[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
+        batch: CollatedBatch,
         batch_idx: int
     ) -> torch.Tensor:
-
+        batch = batch.normalize()
         inp = batch.get_input()
         pred, moe_outputs = self.model(inp)
         loss = self.criterion(pred, batch.target)
         if batch_idx == 0:
-            self.validation_sample = (inp.detach(), batch.target.detach(), pred.detach())
+            self.validation_sample = (batch.input.detach(), batch.target.detach(), pred.detach())
 
         self.default_log_dict({"val_loss": loss})
     

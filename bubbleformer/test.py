@@ -6,6 +6,7 @@ from bubbleformer.data import BubbleForecast
 from bubbleformer.layers.moe.topk_moe import TopkMoEOutput
 from bubbleformer.utils.physical_metrics import PhysicalMetrics, BubbleMetrics, physical_metrics, bubble_metrics
 from bubbleformer.utils.sdf_reinit import sdf_reinit
+from bubbleformer.utils.normalize import normalize, unnormalize
 
 @dataclass
 class TestResults:
@@ -17,12 +18,12 @@ class TestResults:
     fluid_params: dict
 
 def run_test(model, test_file_path: str, max_timesteps: int):
-    downsample_factor = 8
+    downsample_factor = 1
     test_dataset = BubbleForecast(
         filenames=[test_file_path],
         input_fields=["dfun", "temperature", "velx", "vely"],
         output_fields=["dfun", "temperature", "velx", "vely"],
-        norm="none",    
+        norm="none",
         downsample_factor=downsample_factor,
         time_window=5,
         start_time=200,
@@ -40,21 +41,38 @@ def run_test(model, test_file_path: str, max_timesteps: int):
         for itr in range(0, max_timesteps, skip_itrs):
             print(f"Processing timestep {itr} / {max_timesteps}")
             
-            data: Data = test_dataset[itr]  
+            data: Data = test_dataset[itr]
+            data = data.normalize()
+            
             inp = data.input
             tgt = data.target
             fluid_params = data.fluid_params_tensor
+            
             if len(preds) > 0:
                 inp = preds[-1]
+                inp = normalize(inp, *data.get_temps())
 
             inp = inp.cuda().to(torch.float32).unsqueeze(0)
+            tgt = tgt.cuda().to(torch.float32).unsqueeze(0)
             fluid_params = fluid_params.cuda().to(torch.float32).unsqueeze(0)
             
-            pred, moe_output = model(inp, fluid_params)
+            # Note: adding a little gaussian noise to the input
+            #inp += torch.randn_like(inp) * 0.1
+            
+            output = model(inp, fluid_params)
+            if isinstance(output, tuple):
+                pred, moe_output = output
+            else:
+                pred = output
+                moe_output = []
             
             # NOTE: only tracking moe outputs for the first layer
             # all tensor are moved to the CPU
-            moe_outputs.append(moe_output[0].detach().to('cpu'))
+            if len(moe_output) > 0:
+                moe_outputs.append(moe_output[0].detach().to('cpu'))
+                
+            pred = unnormalize(pred, data.fluid_params_dict["bulk_temp"], data.fluid_params_dict["heater_wallTemp"])
+            tgt = unnormalize(tgt, data.fluid_params_dict["bulk_temp"], data.fluid_params_dict["heater_wallTemp"])
 
             # clip pred temperature to valid range, between liquid bulk temp and heater temp.
             pred[:, :, 1] = torch.clamp(
@@ -63,28 +81,34 @@ def run_test(model, test_file_path: str, max_timesteps: int):
                 max=data.fluid_params_dict["heater"]["wallTemp"]
             )
             
-            # Reinitialize the SDF at each timestep, batch dim is 1
-            #pred[0, :, 0] = sdf_reinit(pred[0, :, 0], dx=1/32 * downsample_factor)
-
-            pred = pred.to(torch.float32).squeeze(0)
-            pred = pred.detach().cpu()
-            tgt = tgt.detach().cpu()
-
+            pred = pred.to(torch.float32).squeeze(0).detach().cpu()
+            tgt = tgt.to(torch.float32).squeeze(0).detach().cpu()
+            
+            # Reinitialize the SDF at each timestep
+            pred[:, 0] = sdf_reinit(pred[:, 0], dx=1/32 * downsample_factor, far_threshold=4)
+            
             preds.append(pred)
             targets.append(tgt)
             timesteps.append(torch.arange(start_time+itr+skip_itrs, start_time+itr+2*skip_itrs))
+            
+            torch.save(inp, f"inp_{itr}.pt")
+            break
 
     preds = torch.cat(preds, dim=0)[None, ...]         # 1, T, C, H, W
     targets = torch.cat(targets, dim=0)[None, ...]     # 1, T, C, H, W
     timesteps = torch.cat(timesteps, dim=0)             # T,
 
     topk_indices = [moe_output.topk_indices.squeeze(0) for moe_output in moe_outputs]
-    topk_indices = torch.cat(topk_indices, dim=0) # (T, H, W, topk)
+    if topk_indices:
+        topk_indices = torch.cat(topk_indices, dim=0) # (T, H, W, topk)
+    else:
+        topk_indices = None
 
     print("-"*100)
     print(f"Rollout Statistics on {test_file_path}:")
     dx = 1/32 * downsample_factor
     dy = dx
+    """
     p = physical_metrics(
         preds[:, :, 0], 
         preds[:, :, 1], 
@@ -100,6 +124,9 @@ def run_test(model, test_file_path: str, max_timesteps: int):
         dy=dy
     )
     b = bubble_metrics(preds[:, :, 0], preds[:, :, 2], preds[:, :, 3], dx=dx, dy=dy)
+    """
+    p = None
+    b = None
     
     # NOTE: the test dataset is only one file, so we can take the first index in fluid_params
     return TestResults(preds, targets, p, b, moe_outputs, fluid_params=test_dataset.fluid_params[0])
