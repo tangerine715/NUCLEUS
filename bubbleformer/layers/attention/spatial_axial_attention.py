@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from rotary_embedding_torch import RotaryEmbedding, apply_rotary_emb
 
+@torch.compile(fullgraph=True)
 class SpatialAxialAttention(nn.Module):
     def __init__(
         self,

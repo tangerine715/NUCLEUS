@@ -6,6 +6,8 @@ from rotary_embedding_torch import RotaryEmbedding, apply_rotary_emb
 
 import natten
 
+# NOTE: due to natten, this cannot be compiled with fullgraph=True
+@torch.compile
 class SpatialNeighborhoodAttention(nn.Module):
     r"""
     This is similar to natten's NaighborhoodAttention2D,

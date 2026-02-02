@@ -1,10 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from einops import rearrange
 import einops
 from rotary_embedding_torch import RotaryEmbedding, apply_rotary_emb
+import math
+import time
 
+@torch.compile(fullgraph=True)
 class SpatialAttention(nn.Module):
     def __init__(
         self,
@@ -50,12 +54,13 @@ class SpatialAttention(nn.Module):
             lambda qkv: rearrange(qkv, "bt heads h w head_dim -> bt heads (h w) head_dim").contiguous(), [q, k, v]
         )
         
-        output = F.scaled_dot_product_attention(
-            query=q,
-            key=k,
-            value=v
-        )
-        
+        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+            output = F.scaled_dot_product_attention(
+                query=q,
+                key=k,
+                value=v
+            )
+             
         output = einops.rearrange(output,
                                   "(b t) heads (h w) head_dim -> b t h w (heads head_dim)", 
                                   b=b, t=t, h=h, w=w, heads=self.num_heads).contiguous()
