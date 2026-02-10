@@ -96,12 +96,44 @@ class LpLoss(nn.Module):
 class L1Loss(nn.Module):
     def __init__(self, scales: List[float]):
         super().__init__()
-        self.loss = nn.L1Loss(reduction="mean")
+        self.loss = nn.L1Loss()
         self.scales = scales
     
-    def forward(self, pred, target):
-        channels = pred.shape[2]
-        loss = 0
-        for c in range(channels):
-            loss += self.loss(pred[:, :, c, :, :], target[:, :, c, :, :]) * self.scales[c]
-        return loss / channels
+    def forward(self, pred, target, bulk_temp: torch.Tensor):
+        # compute loss with temperatures mapped to bulk temp 0 for easier training.
+        pred_temp = pred[:, :, 1, :, :] - bulk_temp[:, None, None, None]
+        target_temp = target[:, :, 1, :, :] - bulk_temp[:, None, None, None]
+        pred_bulk = torch.stack([pred[:, :, 0, :, :], pred_temp, pred[:, :, 2, :, :], pred[:, :, 3, :, :]], dim=2)
+        target_bulk = torch.stack([target[:, :, 0, :, :], target_temp, target[:, :, 2, :, :], target[:, :, 3, :, :]], dim=2)
+        return self.loss(pred_bulk, target_bulk)
+        
+        
+class L1RelativeLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.loss = nn.L1Loss(reduction="none")
+
+    def forward(self, pred, target, bulk_temp: torch.Tensor):
+        eps = torch.full_like(target[:, :, 0, :, :], 1e-4)
+        
+        sdf_norm = torch.norm(target[:, :, 0, :, :], p=1, dim=(-3, -2, -1))
+        velx_norm = torch.norm(target[:, :, 2, :, :], p=1, dim=(-3, -2, -1))
+        vely_norm = torch.norm(target[:, :, 3, :, :], p=1, dim=(-3, -2, -1))
+        temp_norm = torch.norm(target[:, :, 1, :, :] - bulk_temp[:, None, None, None], p=1, dim=(-3, -2, -1))
+
+        # The range of values are quite large, so to make the losses a little closer to the
+        # non-relative loss, we divide by the max of the norms.
+        norm_denom = torch.max(
+            torch.stack([sdf_norm, velx_norm, vely_norm, temp_norm], dim=0), dim=0
+        ).values
+        
+        sdf_loss = self.loss(pred[:, :, 0, :, :], target[:, :, 0, :, :]) / (sdf_norm / norm_denom)[:, None, None, None]
+        velx_loss = self.loss(pred[:, :, 2, :, :], target[:, :, 2, :, :]) / (velx_norm / norm_denom)[:, None, None, None]
+        vely_loss = self.loss(pred[:, :, 3, :, :], target[:, :, 3, :, :]) / (vely_norm / norm_denom)[:, None, None, None]
+
+        pred_temp = pred[:, :, 1, :, :]
+        target_temp = target[:, :, 1, :, :]
+        temp_loss = self.loss(pred_temp, target_temp) / (temp_norm / norm_denom)[:, None, None, None]
+        
+        # Add each loss and take mean over batch dimensions.
+        return (sdf_loss + temp_loss + velx_loss + vely_loss).mean()
