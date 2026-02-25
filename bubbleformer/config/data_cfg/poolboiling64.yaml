@@ -44,7 +44,8 @@ train_paths:
   # Saturated LN2-2D
   - /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Saturated-LN2-2D/Twall_-159.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Saturated-LN2-2D/Twall_-160.hdf5
-  - /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Saturated-LN2-2D/Twall_-162.hdf5
+  # 162 has impossible temp (>10,000)
+  #- /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Saturated-LN2-2D/Twall_-162.hdf5
   # 164 has NaN values
   #- /share/crsp/lab/amowli/share/BubbleML_2_downsampled64/PoolBoiling-Saturated-LN2-2D/Twall_-164.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Saturated-LN2-2D/Twall_-165.hdf5
@@ -95,7 +96,8 @@ train_paths:
   # Subcooled LN2-2D
   - /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Subcooled-LN2-2D/Twall_-149.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Subcooled-LN2-2D/Twall_-150.hdf5
-  - /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Subcooled-LN2-2D/Twall_-152.hdf5
+  # -152 has impossible abs max temp (>10,000)
+  #- /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Subcooled-LN2-2D/Twall_-152.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Subcooled-LN2-2D/Twall_-154.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Subcooled-LN2-2D/Twall_-155.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2_downsampled64_bicubic/PoolBoiling-Subcooled-LN2-2D/Twall_-156.hdf5
