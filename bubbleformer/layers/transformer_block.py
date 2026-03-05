@@ -13,8 +13,8 @@ class TransformerBlock(nn.Module):
     ):
         super().__init__()
         
-        self.attention_norm = nn.LayerNorm(embed_dim)
-        self.mlp_norm = nn.LayerNorm(embed_dim)
+        self.attention_norm = nn.RMSNorm(embed_dim)
+        self.mlp_norm = nn.RMSNorm(embed_dim)
         
         self.attention = SpaceTimeAttention(
             embed_dim=embed_dim,

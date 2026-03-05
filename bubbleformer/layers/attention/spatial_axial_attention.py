@@ -21,10 +21,10 @@ class SpatialAxialAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
 
-        self.input_head = nn.Linear(embed_dim, 3 * embed_dim, dtype=torch.bfloat16)
-        self.output_head = nn.Linear(embed_dim, embed_dim, dtype=torch.bfloat16)
-        self.qnorm = nn.LayerNorm(self.head_dim, dtype=torch.bfloat16)
-        self.knorm = nn.LayerNorm(self.head_dim, dtype=torch.bfloat16)
+        self.input_head = nn.Linear(embed_dim, 3 * embed_dim, dtype=torch.bfloat16, bias=False)
+        self.output_head = nn.Linear(embed_dim, embed_dim, dtype=torch.bfloat16, bias=False)
+        self.qnorm = nn.RMSNorm(self.head_dim, dtype=torch.bfloat16)
+        self.knorm = nn.RMSNorm(self.head_dim, dtype=torch.bfloat16)
         
         # TODO: should each attention block use the same rotary embedding?
         self.rotary_emb = RotaryEmbedding(
