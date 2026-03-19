@@ -1,0 +1,5 @@
+name: trapezoidal
+params:
+  warmup_pct: 0.01
+  cooldown_pct: 0.2
+  scale_factor: 0.1
