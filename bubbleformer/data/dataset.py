@@ -43,13 +43,7 @@ class BubbleForecast(Dataset):
         self.time_step = time_step
         self.start_time = start_time
         
-        self.data = [h5.File(filename, "r") for filename in filenames]
-        self.num_trajs = []
-        self.traj_lens = []
-
-        for h5_file in self.data:
-            self.num_trajs.append(1)
-            self.traj_lens.append(h5_file[self.input_fields[0]].shape[0])
+        self.data = None
 
         self.input_num_fields = len(self.input_fields)
         self.output_num_fields = len(self.output_fields)
@@ -70,12 +64,27 @@ class BubbleForecast(Dataset):
         return traj_len - self.start_time - self.future_time_window - self.history_time_window + 1
 
     def __len__(self):
+        self._ensure_open()
         total_len = 0
         for (num_traj, traj_len) in zip(self.num_trajs, self.traj_lens):
             total_len += num_traj * self._get_traj_len(traj_len)
         return total_len
 
+    def _ensure_open(self):
+        # We do this during the first call to __getitem__, rather than during __init__,
+        # to ensure each data loader process opens the files separately.
+        # There can be issues with forking processes with a live HDF5 state.
+        if (getattr(self, "data", None) is None):
+            self.data = [h5.File(filename, "r") for filename in self.filenames]
+            self.num_trajs = []
+            self.traj_lens = []
+            for h5_file in self.data:
+                self.num_trajs.append(1)
+                self.traj_lens.append(h5_file[self.input_fields[0]].shape[0])
+
     def __getitem__(self, idx: int):
+        self._ensure_open()
+        
         samples_per_traj = [
             x * self._get_traj_len(y)
             for x, y in zip(self.num_trajs, self.traj_lens)
