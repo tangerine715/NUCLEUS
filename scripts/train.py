@@ -21,6 +21,7 @@ from lightning.pytorch.callbacks.progress.rich_progress import RichProgressBarTh
 from lightning.pytorch.plugins.environments import SLURMEnvironment
 
 from bubbleformer.data.batching import collate
+from bubbleformer.data.normalize import get_normalizer
 from bubbleformer.data import BubbleForecast, DownsampledBubbleForecast
 from bubbleformer.modules import get_train_module
 from bubbleformer.utils.set_fp32_precision import set_fp32_precision
@@ -117,36 +118,36 @@ def main(cfg: DictConfig) -> None:
 
     dataset = DownsampledBubbleForecast if "64" in cfg.data_cfg.dataset else BubbleForecast
     
+    normalizer = get_normalizer(OmegaConf.to_container(cfg.normalizer_cfg, resolve=True))
+
     train_dataset = dataset(
-                filenames=cfg.data_cfg.train_paths,
-                input_fields=cfg.data_cfg.input_fields,
-                output_fields=cfg.data_cfg.output_fields,
-                norm=cfg.data_cfg.normalize,
-                downsample_factor=cfg.data_cfg.downsample_factor,
-                history_time_window=cfg.data_cfg.history_time_window,
-                future_time_window=cfg.data_cfg.future_time_window,
-                time_step=cfg.data_cfg.time_step,
-                start_time=cfg.data_cfg.start_time,
-                return_fluid_params=cfg.data_cfg.return_fluid_params,
-            )
+        filenames=cfg.data_cfg.train_paths,
+        input_fields=cfg.data_cfg.input_fields,
+        output_fields=cfg.data_cfg.output_fields,
+        history_time_window=cfg.data_cfg.history_time_window,
+        future_time_window=cfg.data_cfg.future_time_window,
+        time_step=cfg.data_cfg.time_step,
+        start_time=cfg.data_cfg.start_time,
+        normalizer=normalizer,
+        augment=True
+    )
     val_dataset = dataset(
-                filenames=cfg.data_cfg.val_paths,
-                input_fields=cfg.data_cfg.input_fields,
-                output_fields=cfg.data_cfg.output_fields,
-                norm=cfg.data_cfg.normalize,
-                downsample_factor=cfg.data_cfg.downsample_factor,
-                history_time_window=cfg.data_cfg.history_time_window,
-                future_time_window=cfg.data_cfg.future_time_window,
-                time_step=cfg.data_cfg.time_step,
-                start_time=cfg.data_cfg.start_time,
-                return_fluid_params=cfg.data_cfg.return_fluid_params,
-            )
+        filenames=cfg.data_cfg.val_paths,
+        input_fields=cfg.data_cfg.input_fields,
+        output_fields=cfg.data_cfg.output_fields,
+        history_time_window=cfg.data_cfg.history_time_window,
+        future_time_window=cfg.data_cfg.future_time_window,
+        time_step=cfg.data_cfg.time_step,
+        start_time=cfg.data_cfg.start_time,
+        normalizer=normalizer,
+        augment=False
+    )
 
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=10,
         pin_memory=True,
         prefetch_factor=2,
         persistent_workers=True,
@@ -156,7 +157,7 @@ def main(cfg: DictConfig) -> None:
         val_dataset,
         batch_size=cfg.batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=10,
         pin_memory=True,
         prefetch_factor=2,
         persistent_workers=True,
@@ -200,6 +201,7 @@ def main(cfg: DictConfig) -> None:
         strategy="auto",
         max_epochs=cfg.max_epochs,
         max_steps=cfg.max_steps,
+        log_every_n_steps=100,
         #accumulate_grad_batches=cfg.accumulate_grad_batches,
         logger=logger,
         default_root_dir=cfg.log_dir,
@@ -230,10 +232,9 @@ def main(cfg: DictConfig) -> None:
     #)
 
     #with profile(
-    #    activities=[ProfilerActivity.CUDA],
+    #    activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
         #record_shapes=True,
         #profile_memory=True,
-        #with_stack=True,
     #) as prof:
 
     trainer.fit(

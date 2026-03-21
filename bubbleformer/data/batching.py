@@ -37,15 +37,27 @@ class CollatedBatch:
     dy: torch.Tensor
     rollout_steps: Optional[torch.Tensor] = None
     
-    def to(self, device: torch.device):
+    def pin_memory(self):
         return CollatedBatch(
-            input=self.input.to(device),
-            target=self.target.to(device) if self.target is not None else None,
+            input=self.input.pin_memory(),
+            target=self.target.pin_memory() if self.target is not None else None,
             fluid_params_dict=self.fluid_params_dict,
-            x_grid=self.x_grid.to(device),
-            y_grid=self.y_grid.to(device),
-            dx=self.dx.to(device),
-            dy=self.dy.to(device),
+            x_grid=self.x_grid.pin_memory(),
+            y_grid=self.y_grid.pin_memory(),
+            dx=self.dx.pin_memory(),
+            dy=self.dy.pin_memory(),
+            rollout_steps=self.rollout_steps
+        )
+    
+    def to(self, device: torch.device, non_blocking: bool = False):
+        return CollatedBatch(
+            input=self.input.to(device, non_blocking=non_blocking),
+            target=self.target.to(device, non_blocking=non_blocking) if self.target is not None else None,
+            fluid_params_dict=self.fluid_params_dict,
+            x_grid=self.x_grid.to(device, non_blocking=non_blocking),
+            y_grid=self.y_grid.to(device, non_blocking=non_blocking),
+            dx=self.dx.to(device, non_blocking=non_blocking),
+            dy=self.dy.to(device, non_blocking=non_blocking),
             rollout_steps=self.rollout_steps
         )
         
@@ -102,7 +114,7 @@ class CollatedBatch:
             dy=self.dy,
             rollout_steps=self.rollout_steps
         )
-        
+    
     def normalize(self, normalizer: Normalizer):
         return CollatedBatch(
             input=normalizer.normalize(self.input, self.get_temps()[0]),
@@ -111,7 +123,7 @@ class CollatedBatch:
             x_grid=self.x_grid,
             y_grid=self.y_grid,
         )
-        
+    
     def unnormalize(self, normalizer: Normalizer):
         return CollatedBatch(
             input=normalizer.unnormalize(self.input, self.get_temps()[0]),

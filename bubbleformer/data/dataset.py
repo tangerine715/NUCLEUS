@@ -1,12 +1,13 @@
 from typing import List, Optional, Tuple, Dict
 import json
-
+import random
 import numpy as np
 import h5py as h5
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 from bubbleformer.data.batching import make_data
+from bubbleformer.data.normalize import Normalizer
 
 class BubbleForecast(Dataset):
     """
@@ -21,9 +22,8 @@ class BubbleForecast(Dataset):
         history_time_window: int,
         time_step: int,
         start_time: int,
-        norm: str = "none",
-        downsample_factor: int = 1,
-        return_fluid_params: bool = False,
+        normalizer: Optional[Normalizer],
+        augment: bool,
     ):
         super().__init__()
         self.filenames = filenames
@@ -35,13 +35,14 @@ class BubbleForecast(Dataset):
             self.output_fields = output_fields
         else:
             self.output_fields = ["dfun", "temperature", "velx", "vely"]
-        self.norm = norm
-        self.downsample_factor = downsample_factor
-        #self.time_window = time_window
         self.future_time_window = future_time_window
         self.history_time_window = history_time_window
         self.time_step = time_step
         self.start_time = start_time
+        
+        self.normalizer = normalizer
+        self.augment = augment
+        self.noise_scales = torch.linspace(0.001, 1, 500).tolist()
         
         self.data = None
 
@@ -51,14 +52,12 @@ class BubbleForecast(Dataset):
         self.diff_terms = {k:[] for k in self.fields}
         self.div_terms = {k:[] for k in self.fields}
 
-        self.return_fluid_params = return_fluid_params
-        if self.return_fluid_params:
-            fluid_params_files = [fname.replace(".hdf5", ".json") for fname in filenames]
-            self.fluid_params = []
-            for fluid_params_file in fluid_params_files:
-                with open(fluid_params_file, "r", encoding="utf-8") as f:
-                    fluid_params = json.load(f)
-                self.fluid_params.append(fluid_params)
+        fluid_params_files = [fname.replace(".hdf5", ".json") for fname in filenames]
+        self.fluid_params = []
+        for fluid_params_file in fluid_params_files:
+            with open(fluid_params_file, "r", encoding="utf-8") as f:
+                fluid_params = json.load(f)
+            self.fluid_params.append(fluid_params)
 
     def _get_traj_len(self, traj_len: int) -> int:
         return traj_len - self.start_time - self.future_time_window - self.history_time_window + 1
@@ -104,35 +103,34 @@ class BubbleForecast(Dataset):
         out_data = []
 
         for field in self.input_fields:
-            data_item = torch.tensor(self.data[file_idx][field][inp_slice])
-            if self.downsample_factor > 1:
-                _, h, w = data_item.shape
-                new_h, new_w = h // self.downsample_factor, w // self.downsample_factor
-                data_item = F.interpolate(
-                    data_item.unsqueeze(1),
-                    size=(new_h, new_w),
-                    mode="bilinear"
-                ).squeeze(1)
-                
+            data_item = torch.from_numpy(np.array(self.data[file_idx][field][inp_slice]))
             inp_data.append(data_item)
         for field in self.output_fields:
-            data_item = torch.tensor(self.data[file_idx][field][out_slice])
-            if self.downsample_factor > 1:
-                _, h, w = data_item.shape
-                new_h, new_w = h // self.downsample_factor, w // self.downsample_factor
-                data_item = F.interpolate(
-                    data_item.unsqueeze(1),
-                    size=(new_h, new_w),
-                    mode="bilinear"
-                ).squeeze(1)
+            data_item = torch.from_numpy(np.array(self.data[file_idx][field][out_slice]))
             out_data.append(data_item)
 
+        # (T, H, W, C)
         inp_data = torch.stack(inp_data, dim=-1)
         out_data = torch.stack(out_data, dim=-1)
+        
+        fluid_params = self.fluid_params[file_idx]
+        bulk_temp = int(fluid_params["bulk_temp"])
+
+        if self.normalizer is not None:
+            inp_data = self.normalizer.normalize(inp_data, bulk_temp)
+            out_data = self.normalizer.normalize(out_data, bulk_temp)
+        
+        if self.augment:
+            if random.random() < 0.5:
+                inp_data = torch.flip(inp_data, dims=[2])
+                out_data = torch.flip(out_data, dims=[2])
+            if random.random() < 0.9:
+                scale = random.choice(self.noise_scales)
+                inp_data = inp_data + torch.normal(0, scale, inp_data.shape, device=inp_data.device)
 
         return make_data(
             input=inp_data.float(),
             target=out_data.float(),
             fluid_params_dict=self.fluid_params[file_idx],
-            downsample_factor=self.downsample_factor
+            downsample_factor=1
         )

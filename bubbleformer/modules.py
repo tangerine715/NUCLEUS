@@ -15,7 +15,7 @@ import lightning as L
 from bubbleformer.data.batching import CollatedBatch
 from bubbleformer.data.normalize import get_normalizer
 from bubbleformer.models import get_model
-from bubbleformer.utils.lr_schedulers import CosineWarmupLR
+from bubbleformer.utils.lr_schedulers import CosineWarmupLR, TrapezoidalLR
 #from bubbleformer.utils.plot_utils import wandb_sdf_plotter, wandb_temp_plotter, wandb_vel_plotter
 from bubbleformer.layers.moe.topk_moe import TopkRouterWithBias
 
@@ -50,14 +50,12 @@ class ForecastModule(L.LightningModule):
         self.checkpoint_path = checkpoint_path
         self.model_cfg = OmegaConf.to_container(model_cfg, resolve=True)
         self.data_cfg = OmegaConf.to_container(data_cfg, resolve=True)
-        self.normalizer_cfg = OmegaConf.to_container(normalizer_cfg, resolve=True)
         self.optimizer_cfg = OmegaConf.to_container(optim_cfg, resolve=True)
         self.scheduler_cfg = OmegaConf.to_container(scheduler_cfg, resolve=True)
         if normalization_constants is not None:
             self.normalization_constants = normalization_constants
         self.log_wandb = log_wandb
 
-        self.normalizer = get_normalizer(self.normalizer_cfg)
         self.criterion = torch.nn.L1Loss()
 
         self.model_cfg["params"]["input_fields"] = len(self.data_cfg["input_fields"])
@@ -78,27 +76,26 @@ class ForecastModule(L.LightningModule):
         self.train_start_time = None
         self.val_start_time = None
 
+        # If we're using Muon, we need two optimizers Muon for 2d
+        # parameters, and AdamW for everything else. Using multiple
+        # optimizers requires manual optimization.
+        if self.optimizer_cfg["name"] == "muon":
+           self.automatic_optimization = False
+
     def default_log(self, key, value, **kwargs):
-        kwargs["on_step"] = True
-        kwargs["on_epoch"] = True
-        kwargs["prog_bar"] = True
         kwargs["logger"] = True
         self.log(key, value, **kwargs)
-        if self.log_wandb and self.trainer.is_global_zero:
-            wandb.log({key: value})
 
     def default_log_dict(self, dict, **kwargs):
-        kwargs["on_step"] = True
-        kwargs["on_epoch"] = True
-        kwargs["prog_bar"] = True
         kwargs["logger"] = True
         self.log_dict(dict, **kwargs)
-        if self.log_wandb and self.trainer.is_global_zero:
-            wandb.log(dict)
 
     def get_current_lr(self):
         opt = self.optimizers()
-        return opt.param_groups[0]['lr']
+        if isinstance(opt, list):
+            return opt[0].param_groups[0]['lr']
+        else:
+            return opt.param_groups[0]['lr']
 
     def setup(
         self,
@@ -148,44 +145,52 @@ class ForecastModule(L.LightningModule):
         opt_name = self.optimizer_cfg["name"]
         opt_params = self.optimizer_cfg["params"]
         if opt_name == "adamw":
-            optimizer = AdamW(self.model.parameters(), **opt_params, fused=True)
+            optimizer = [AdamW(self.model.parameters(), **opt_params, fused=True)]
         elif opt_name == "adam":
-            optimizer = Adam(self.model.parameters(), **opt_params)
+            optimizer = [Adam(self.model.parameters(), **opt_params)]
         elif opt_name == "lion":
-            optimizer = Lion(self.model.parameters(), **opt_params)
+            optimizer = [Lion(self.model.parameters(), **opt_params)]
         elif opt_name == "muon":
-            optimizer = Muon(self.model.parameters(), **opt_params)
+            # Use Muon for 2D parameters and AdamW for everything else.
+            params2d = [p for p in self.model.parameters() if p.dim() == 2]
+            params_other = [p for p in self.model.parameters() if p.dim() != 2]
+            adamw = AdamW(params_other, **opt_params, fused=True)
+            muon = Muon(params2d, **opt_params, adjust_lr_fn="match_rms_adamw")
+            optimizer = [adamw, muon]
         else:
             raise ValueError(f"Optimizer {opt_name} not supported")
 
         scheduler_name = self.scheduler_cfg["name"]
         scheduler_params = self.scheduler_cfg["params"]
-        if scheduler_name == "cosine":
-            scheduler = CosineAnnealingLR(
-                            optimizer,
-                            T_max=self.t_max,
-                            eta_min=scheduler_params["eta_min"],
-                            last_epoch=self.trainer.global_step - 1
-                        )
         if scheduler_name == "cosine_warmup":
-            scheduler = CosineWarmupLR(
+            scheduler = [CosineWarmupLR(
                             optimizer,
                             warmup_iters=scheduler_params["warmup_iters"],
                             max_iters=self.t_max,
                             eta_min=scheduler_params["eta_min"],
                             last_epoch=self.trainer.global_step - 1
-                        )
+                        )]
+        elif scheduler_name == "trapezoidal":
+            warmup_iters = scheduler_params["warmup_pct"] * self.t_max
+            cooldown_iters = scheduler_params["cooldown_pct"] * self.t_max
+            flat_iters = self.t_max - warmup_iters - cooldown_iters
+            scheduler = [{
+                    "scheduler": TrapezoidalLR(
+                        optimizer[idx],
+                        scale_factor=scheduler_params["scale_factor"],
+                        warmup_iters=warmup_iters,
+                        flat_iters=flat_iters,
+                        cooldown_iters=cooldown_iters,
+                        last_epoch=self.trainer.global_step - 1
+                    ),
+                    "interval": "step",
+                    "frequency": 1
+                } for idx in range(len(optimizer))
+            ]
         else:
             raise ValueError(f"Scheduler {scheduler_name} not supported")
 
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",
-                "frequency": 1
-            }
-        }
+        return optimizer, scheduler
 
     def on_train_epoch_start(self):
         self.train_start_time = time.time()
@@ -309,6 +314,7 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             scheduler_cfg=scheduler_cfg,
             log_wandb=log_wandb,
         )
+        self.noise_scales = torch.linspace(0.01, 1, 500).tolist()
 
     def moe_metrics(self, moe_outputs, log_dict: dict, prefix: str) -> dict:
         for moe_idx, moe_output in enumerate(moe_outputs):
@@ -316,32 +322,41 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
 
             # perfect balance is 0, while 1 is imbalanced.
             coeff_of_variation = (tpe.std() / tpe.mean()).item()
-            log_dict[f"{prefix}/coeff_of_variation_layer{moe_idx}"] = coeff_of_variation
+            log_dict[f"{prefix}_moe/coeff_of_variation_layer{moe_idx}"] = coeff_of_variation
 
             # Check the ratio of max load to the mean load.
             # Ideally, this metric should be close to 1.
             load_imbalance_factor = tpe.max() / tpe.mean()
-            log_dict[f"{prefix}/load_imbalance_factor_layer{moe_idx}"] = load_imbalance_factor.item()
+            log_dict[f"{prefix}_moe/load_imbalance_factor_layer{moe_idx}"] = load_imbalance_factor.item()
 
             # Check if any experts receive less than 1% of the tokens.
             # ideally, this metric should be 1.
             min_fraction = 0.01
             threshold = tpe.sum() * min_fraction
             active = (tpe > threshold).float().mean()
-            log_dict[f"{prefix}/active_experts_layer{moe_idx}"] = active.item()
+            log_dict[f"{prefix}_moe/active_experts_layer{moe_idx}"] = active.item()
         return log_dict
+
+    def on_before_optimizer_step(self, optimizer):
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            self.model.parameters(),
+            max_norm=float("inf"),  # not clipping. Only used to get grad norm.
+        )
+        self.log("train/grad_norm", grad_norm, on_step=True, on_epoch=False)
+
+    def transfer_batch_to_device(self, batch: CollatedBatch, device: torch.device, dataloader_idx: int):
+        r"""
+        Since our batch is in a dataclass, pytorch and lightning cannot figure out how to pin memory and
+        asynchrously transfer the batch to the device. So, we do this manually.
+        """
+        pinned_batch = batch.pin_memory()
+        return pinned_batch.to(device, non_blocking=True)
 
     def training_step(
         self,
         batch: CollatedBatch,
         batch_idx: int
     ) -> torch.Tensor:
-        batch = batch.normalize(self.normalizer)
-        if random.random() < 0.5:
-            batch = batch.fliplr()
-        if random.random() < 0.9:
-            batch = batch.noise(random.choice(torch.linspace(0.001, 1, 500).tolist()))
-
         inp = batch.get_input()
         pred, moe_outputs = self.model(inp)
 
@@ -365,41 +380,54 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
                     module.update_router_bias(moe_outputs[router_idx].router_output.tokens_per_expert)
                     router_idx += 1
 
+        if not self.automatic_optimization:
+            # MANUAL OPTIMIZATION IF USING MULTIPLE OPTIMIZERS
+            optimizers = self.optimizers()
+            if not isinstance(optimizers, list):
+                optimizers = [optimizers]
+            for opt in optimizers:
+                opt.zero_grad()
+            self.manual_backward(loss)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            for opt in optimizers:
+                opt.step()
+
+            # MANUALLY APPLY SCHEDULER
+            schedulers = self.lr_schedulers()
+            if not isinstance(schedulers, list):
+                schedulers = [schedulers]
+            for scheduler in schedulers:
+                scheduler.step()
+
         log_dict = {
             "train/loss": loss,
             "train/data_loss": data_loss,
-            "train/learning_rate": self.get_current_lr()
+            "train/step": self.global_step,
+            "train/learning_rate": self.get_current_lr(),
         }
         if router_with_loss:
-            log_dict["train/routing_loss"] = router_loss
+            log_dict["train_moe/routing_loss"] = router_loss
 
-        log_dict = self.moe_metrics(moe_outputs, log_dict, "train")
-
-        # Simple confirmation that the standard deviation and mean normalized reasonably
-        inp = inp.detach()
-        log_dict["train/sdf_mean"] = inp.input[..., 0, :, :].mean().item()
-        log_dict["train/temp_mean"] = inp.input[..., 1, :, :].mean().item()
-        log_dict["train/velx_mean"] = inp.input[..., 2, :, :].mean().item()
-        log_dict["train/vely_mean"] = inp.input[..., 3, :, :].mean().item()
-        log_dict["train/sdf_std"] = inp.input[..., 0, :, :].std().item()
-        log_dict["train/temp_std"] = inp.input[..., 1, :, :].std().item()
-        log_dict["train/velx_std"] = inp.input[..., 2, :, :].std().item()
-        log_dict["train/vely_std"] = inp.input[..., 3, :, :].std().item()
+        # Log less freuently--has non-trivial runtime overhead.
+        if self.global_step % 100 == 0:
+            with torch.no_grad():
+                log_dict["train/input_mean"] = inp.input.mean().item()
+                log_dict["train/input_std"] = inp.input.std().item()
+                log_dict = self.moe_metrics(moe_outputs, log_dict, "train")
 
         self.default_log_dict(log_dict)
 
         return loss
 
     def validation_step(
-        self,
+            self,
         batch: CollatedBatch,
         batch_idx: int
     ) -> torch.Tensor:
         batch = batch.normalize(self.normalizer)
         inp = batch.get_input()
         pred, moe_outputs = self.model(inp)
-        bulk_temp, _ = batch.get_temps()
-        loss = self.criterion(pred, batch.target, bulk_temp)
+        loss = self.criterion(pred, batch.target)
         if batch_idx == 0:
             self.validation_sample = (batch.input.detach(), batch.target.detach(), pred.detach())
 
