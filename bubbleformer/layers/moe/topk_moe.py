@@ -241,16 +241,17 @@ class TopkMoE(nn.Module):
         self.intermediate_dim = intermediate_dim
         self.topk = topk
         
-        self.w1 = nn.Parameter(torch.empty(num_experts, hidden_dim, intermediate_dim, dtype=torch.bfloat16))
-        self.w2 = nn.Parameter(torch.empty(num_experts, intermediate_dim, hidden_dim, dtype=torch.bfloat16))
+        self.w1 = nn.Parameter(torch.empty(num_experts, intermediate_dim, hidden_dim, dtype=torch.bfloat16))
+        self.w2 = nn.Parameter(torch.empty(num_experts, hidden_dim, intermediate_dim, dtype=torch.bfloat16))
         self.reset_parameters()
 
         self.router = router
         
     def reset_parameters(self):
         with torch.no_grad():
-            self.w1.normal_(0, 1 / math.sqrt(self.hidden_dim))
-            self.w2.normal_(0, 1 / math.sqrt(self.intermediate_dim))
+            gain = math.sqrt(2)
+            self.w1.data.normal_(0, gain / math.sqrt(self.hidden_dim))
+            self.w2.data.normal_(0, gain / math.sqrt(self.intermediate_dim))
 
     def forward(self, x):
         r"""
@@ -269,12 +270,11 @@ class TopkMoE(nn.Module):
         
         # NOTE with torch.compile(fullgraph=True), the grouped gemm kernel does not support torch.float32, 
         # so the input data has to be truncated to bfloat 16.
-        groups = x[router_output.indices // self.topk].to(torch.bfloat16)        
+        groups = x.to(torch.bfloat16)[router_output.indices // self.topk]        
         # Compute all of the experts
-        groups = torch._grouped_mm(groups, self.w1, router_output.group_indices)
+        groups = torch.nn.functional.grouped_mm(groups, self.w1.mT, offs=router_output.group_indices)
         groups = F.gelu(groups)
-        groups = torch._grouped_mm(groups, self.w2, router_output.group_indices)
-        groups = groups.to(torch.float32)
+        groups = torch.nn.functional.grouped_mm(groups, self.w2.mT, offs=router_output.group_indices)
         
         # Scatter the tokens to [B, topk, hidden_dim]
         scattered = torch.empty_like(groups)
@@ -285,10 +285,10 @@ class TopkMoE(nn.Module):
         out = (scattered * router_output.topk_probs.unsqueeze(-1)).sum(dim=1).view(input_shape)
         
         # Convert to convenient shape for visualization.
-        router_output.topk_indices = router_output.topk_indices.view(B, T, H, W, self.topk).detach().clone()        
+        router_output.topk_indices = router_output.topk_indices.view(B, T, H, W, self.topk).detach()
         
         return TopkMoEOutput(
-            out=out, 
+            out=out.to(torch.float32), 
             router_output=router_output,
             topk=self.topk,
             num_experts=self.num_experts,
