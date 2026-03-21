@@ -1,5 +1,4 @@
 import dataclasses
-from this import d
 import torch
 from typing import Dict, List, Optional
 from bubbleformer.data.normalize import Normalizer
@@ -80,7 +79,7 @@ class CollatedBatch:
         
     def fliplr(self):
         return CollatedBatch(
-            # B T H W C, flip along the width (dim 3)
+            # B T H W C, flip along the width (dim)
             input=torch.flip(self.input, dims=[3]),
             target=torch.flip(self.input, dims=[3]),
             fluid_params_dict=self.fluid_params_dict,
