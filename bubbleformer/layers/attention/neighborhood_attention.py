@@ -6,8 +6,7 @@ from rotary_embedding_torch import RotaryEmbedding, apply_rotary_emb
 
 import natten
 
-# NOTE: due to natten, this cannot be compiled with fullgraph=True
-@torch.compile
+@torch.compile(fullgraph=True)
 class NeighborhoodAttention(nn.Module):
     r"""
     This is similar to natten's NaighborhoodAttention2D,
@@ -24,41 +23,32 @@ class NeighborhoodAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
         self.kernel_size = kernel_size
+        
+        assert self.head_dim % 16 == 0
 
         self.input_head = nn.Linear(embed_dim, 3 * embed_dim, dtype=torch.bfloat16, bias=False)
         self.output_head = nn.Linear(embed_dim, embed_dim, dtype=torch.bfloat16, bias=False)
         self.qnorm = nn.RMSNorm(self.head_dim, dtype=torch.bfloat16)
         self.knorm = nn.RMSNorm(self.head_dim, dtype=torch.bfloat16)
         
-        # TODO: should each attention block use the same rotary embedding?
-        self.rotary_emb = RotaryEmbedding(
-            # NOTE: This must be smaller than the head dim. 
-            dim=self.head_dim // 3,
-            freqs_for="pixel",
-            max_freq=256
-        )
-        
         self.work_dtype = torch.bfloat16
+        
+        natten.use_kv_parallelism_in_fused_na(mode=True)
+        # Unrestricted may increase memory usage, but allows for better performance.
+        natten.set_memory_usage_preference(pref='unrestricted')
 
-    def forward(self, x):
+    def forward(self, x, freqs):
         b, t, h, w, c = x.shape
         input_dtype = x.dtype
         
-        # rotary embedding expects seq-last [batch, heads, seq1, seq2, seq3, dim] layout
-        heads = einops.rearrange(self.input_head(x.to(self.work_dtype)), 
-                                 "b t h w (heads head_dim) -> b heads t h w head_dim", 
-                                 heads=self.num_heads).contiguous()
+        x = x.to(self.work_dtype)
+        heads = self.input_head(x).view(b, t, h, w, self.num_heads, 3 * self.head_dim)
+        
         q, k, v = heads.tensor_split(3, dim=-1)
         q = self.qnorm(q)
         k = self.knorm(k)
-        freqs = self.rotary_emb.get_axial_freqs(t, h, w)
         q = apply_rotary_emb(freqs, q)
         k = apply_rotary_emb(freqs, k)
-        
-        # natten expects head-last [batch, seq1, seq2, heads, dim] layout
-        q, k, v = map(
-            lambda qkv: rearrange(qkv, "b heads t h w head_dim -> b t h w heads head_dim").contiguous(), [q, k, v]
-        )
         
         output = natten.na3d(
             q,
@@ -67,6 +57,16 @@ class NeighborhoodAttention(nn.Module):
             kernel_size=(t, self.kernel_size, self.kernel_size),
             stride=1,
             dilation=1,
+            # Settings determined using natten's profiler, this is a substantial performance
+            # improvement (~2x for forward and backward passes) over the default settings.
+            # 1. Based on input [batch=16, time=8, height=32, width=32, num_heads=4, head_dim=128]
+            # 2. assuming kernel size is (time, 3, 3)
+            # 3. Profiled on A30 GPU.
+            backend="cutlass-fna",
+            q_tile_shape=(8, 4, 2),
+            kv_tile_shape=(8, 4, 4),
+            backward_q_tile_shape=(8, 2, 4),
+            backward_kv_tile_shape=(8, 4, 2)
         )
         
         output = output.view(b, t, h, w, self.num_heads * self.head_dim)

@@ -23,9 +23,9 @@ class TransformerBlock(nn.Module):
         
         self.mlp = GeluMLP(embed_dim)
         
-    def _attention(self, x: torch.Tensor) -> torch.Tensor:
+    def _attention(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
         with record_function("attention"):
-            x = self.attention(self.attention_norm(x)) + x
+            x = self.attention(self.attention_norm(x), freqs) + x
         return x
     
     def _mlp(self, x: torch.Tensor) -> torch.Tensor:
@@ -33,8 +33,8 @@ class TransformerBlock(nn.Module):
             x = self.mlp(self.mlp_norm(x)) + x
         return x    
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self._attention(x)
+    def forward(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
+        x = self._attention(x, freqs)
         x = self._mlp(x)
         return x
     
@@ -71,8 +71,8 @@ class TransformerMoEBlock(TransformerBlock):
             x = moe_output.out
         return x, moe_output
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self._attention(x)
+    def forward(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
+        x = self._attention(x, freqs)
         x, moe_output = self._mlp(x)
         return x, moe_output
     

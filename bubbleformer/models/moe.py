@@ -4,6 +4,7 @@ import torch.utils.checkpoint as cp
 import numpy as np
 from einops import rearrange
 from torch.profiler import record_function
+from rotary_embedding_torch import RotaryEmbedding
 
 from bubbleformer.layers import (
     HMLPEmbed, 
@@ -43,6 +44,16 @@ class MoEBase(nn.Module):
         )
         
         self.film_embed = FiLMMLP(num_fluid_params, embed_dim)
+
+        # Every attention block reuses the same frequencies, so we only need to compute them once.
+        self.rotary_emb = RotaryEmbedding(
+            # NOTE: This must be smaller than the head dim. 
+            dim=(embed_dim // num_heads) // 3,
+            freqs_for="pixel",
+            max_freq=256,
+            # We want a [Batch, Seq1, Seq2, Seq3, Heads, Dim] layout
+            seq_before_head_dim=True
+        )
         
         self.blocks = nn.ModuleList([
             TransformerMoEBlock(
@@ -68,34 +79,40 @@ class MoEBase(nn.Module):
         fluid_params: (B, num_fluid_params)
         """
         x = batch.input
-        fluid_params = batch.fluid_params_tensor(x.device)
-        B, T, _, _, _ = x.shape
-        
+        fluid_params = batch.fluid_params_tensor(x.device)        
         input = x
         assert input.dtype == torch.float32
         assert fluid_params.dtype == torch.float32
         
-        # Encode
         with record_function("encode"):
             x = self.embed(x)
         embed = x
 
-        # Apply FiLM conditioning on the embeddings
         with record_function("film_embed"):
             x = self.film_embed(x, fluid_params)
         fluid_embed = x
+        
+        # Get axial frequencies for rotary embedding.
+        # We expand the dims so that it matches [B, T, H, W, heads, head_dim] used in the attention layers.
+        # These are unlearned, so do with no_grad.
+        with record_function("get_axial_freqs"):
+            with torch.no_grad():
+                _, embed_t, embed_h, embed_w, _ = embed.shape
+                rotary_freqs = self.rotary_emb.get_axial_freqs(embed_t, embed_h, embed_w)[None, :, :, :, None, :]
 
         # Attention blocks, tracking the MoE output for the routing losses
         moe_outputs = []
         for idx, blk in enumerate(self.blocks):
             with record_function(f"block_{idx}"):
-               x, moe_output = blk(x)
+               x, moe_output = blk(x, rotary_freqs)
                moe_outputs.append(moe_output)
         
-        # Skip connection from patch and fluid embeddings
-        x = x + embed + fluid_embed        
-        x = self.out_norm(x)
-        x = self.debed(x)
+        # Skip connections from patch and fluid embeddings
+        x = x + embed + fluid_embed   
+
+        with record_function("debed"):
+            x = self.out_norm(x)
+            x = self.debed(x)
         
         # Skip connection from the input
         x = x + input
@@ -207,6 +224,7 @@ class SpatialNeighborMoE(MoEBase):
         ])
         
 @register_model("neighbor_moe")
+@torch.compile(fullgraph=True)
 class NeighborMoE(MoEBase):
     def __init__(
         self,
