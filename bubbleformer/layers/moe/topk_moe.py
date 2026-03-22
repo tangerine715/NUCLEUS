@@ -93,10 +93,10 @@ class RouterBase(nn.Module):
         # Need bias=False, since a bias would create preference for specific experts,
         # regardless of the input data.
         self.router = nn.Linear(hidden_dim, num_experts, bias=False)
-        # 0.01 is chosen to be smaller than typical default initalization,
+        # scale is chosen to be smaller than typical default initalization,
         # smaller inital parameters should result in better initial load balance.
         with torch.no_grad():
-            self.router.weight.data.normal_(0, 0.01)
+            self.router.weight.data.normal_(0, 0.001)
         
     def forward(self, x, router_bias: Optional[torch.Tensor] = None):       
         router_logits = self.router(x)

@@ -393,7 +393,8 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             for opt in optimizers:
                 opt.step()
-            # global_step is incremented by the number of optimizers. Subtract 1 to get the training step.
+            # global_step is incremented by the number of optimizers. 
+            # Subtracting to get the actual training step.
             self.global_step -= len(optimizers) - 1
 
             # MANUALLY APPLY SCHEDULER
