@@ -6,7 +6,10 @@ from rotary_embedding_torch import RotaryEmbedding, apply_rotary_emb
 
 import natten
 
-@torch.compile(fullgraph=True)
+@torch.compile(
+    fullgraph=True, 
+    mode="reduce-overhead"
+)
 class NeighborhoodAttention(nn.Module):
     r"""
     This is similar to natten's NaighborhoodAttention2D,

@@ -34,7 +34,6 @@ class MoEBase(nn.Module):
         num_fluid_params: int,
         num_experts: int,
         topk: int,
-        load_balance_loss_weight: float,
     ):
         super().__init__()
         self.embed = LinearEmbed(
@@ -43,8 +42,6 @@ class MoEBase(nn.Module):
             embed_dim=embed_dim,
         )
         
-        self.film_embed = FiLMMLP(num_fluid_params, embed_dim)
-
         # Every attention block reuses the same frequencies, so we only need to compute them once.
         self.rotary_emb = RotaryEmbedding(
             # NOTE: This must be smaller than the head dim. 
@@ -55,15 +52,18 @@ class MoEBase(nn.Module):
             seq_before_head_dim=True
         )
         
+        self.drop_path_probs = torch.linspace(0.0, 0.1, processor_blocks)
+        
         self.blocks = nn.ModuleList([
             TransformerMoEBlock(
                 embed_dim=embed_dim,
                 num_heads=num_heads,
                 num_experts=num_experts,
                 topk=topk,
-                load_balance_loss_weight=load_balance_loss_weight,
+                drop_path_prob=self.drop_path_probs[idx].item(),
+                num_fluid_params=num_fluid_params,
             )
-            for _ in range(processor_blocks)
+            for idx in range(processor_blocks)
         ])
 
         self.out_norm = nn.RMSNorm(embed_dim)
@@ -85,10 +85,6 @@ class MoEBase(nn.Module):
         with record_function("encode"):
             x = self.embed(x)
         embed = x
-
-        with record_function("film_embed"):
-            x = self.film_embed(x, batch.fluid_params_tensor)
-        fluid_embed = x
         
         # Get axial frequencies for rotary embedding.
         # We expand the dims so that it matches [B, T, H, W, heads, head_dim] used in the attention layers.
@@ -102,19 +98,16 @@ class MoEBase(nn.Module):
         moe_outputs = []
         for idx, blk in enumerate(self.blocks):
             with record_function(f"block_{idx}"):
-               x, moe_output = blk(x, rotary_freqs)
+               x, moe_output = blk(x, rotary_freqs, batch.fluid_params_tensor)
                moe_outputs.append(moe_output)
         
-        # Skip connections from patch and fluid embeddings
-        x = x + embed + fluid_embed   
+        # Skip connections from patch embeddings
+        x = x + embed 
 
         with record_function("debed"):
             x = self.out_norm(x)
             x = self.debed(x)
-        
-        # Skip connection from the input
-        x = x + input
-        
+
         return x, moe_outputs
     
 @register_model("vit_moe")
@@ -130,7 +123,6 @@ class ViTMoE(MoEBase):
         num_fluid_params: int,
         num_experts: int,
         topk: int,
-        load_balance_loss_weight: float,
     ):
         super().__init__(
             input_fields=input_fields,
@@ -142,7 +134,6 @@ class ViTMoE(MoEBase):
             num_fluid_params=num_fluid_params,
             num_experts=num_experts,
             topk=topk,
-            load_balance_loss_weight=load_balance_loss_weight,
         )
 
 @register_model("axial_moe")
@@ -158,7 +149,6 @@ class AxialMoE(MoEBase):
         num_fluid_params: int,
         num_experts: int,
         topk: int,
-        load_balance_loss_weight: float,
     ):
         super().__init__(
             input_fields=input_fields,
@@ -170,7 +160,6 @@ class AxialMoE(MoEBase):
             num_fluid_params=num_fluid_params,
             num_experts=num_experts,
             topk=topk,
-            load_balance_loss_weight=load_balance_loss_weight,
         )
         self.blocks = nn.ModuleList([
             TransformerAxialMoEBlock(
@@ -178,9 +167,10 @@ class AxialMoE(MoEBase):
                 num_heads=num_heads,
                 num_experts=num_experts,
                 topk=topk,
-                load_balance_loss_weight=load_balance_loss_weight,
+                drop_path_prob=self.drop_path_probs[idx].item(),
+                num_fluid_params=num_fluid_params,
             )
-            for _ in range(processor_blocks)
+            for idx in range(processor_blocks)
         ])
 
 @register_model("spatial_neighbor_moe")
@@ -196,7 +186,6 @@ class SpatialNeighborMoE(MoEBase):
         num_fluid_params: int,
         num_experts: int,
         topk: int,
-        load_balance_loss_weight: float,
     ):
         super().__init__(
             input_fields=input_fields,
@@ -208,7 +197,6 @@ class SpatialNeighborMoE(MoEBase):
             num_fluid_params=num_fluid_params,
             num_experts=num_experts,
             topk=topk,
-            load_balance_loss_weight=load_balance_loss_weight,
         )
         self.blocks = nn.ModuleList([
             TransformerSpatialNeighborMoEBlock(
@@ -216,13 +204,13 @@ class SpatialNeighborMoE(MoEBase):
                 num_heads=num_heads,
                 num_experts=num_experts,
                 topk=topk,
-                load_balance_loss_weight=load_balance_loss_weight,
+                drop_path_prob=self.drop_path_probs[idx].item(),
+                num_fluid_params=num_fluid_params,
             )
-            for _ in range(processor_blocks)
+            for idx in range(processor_blocks)
         ])
-        
+
 @register_model("neighbor_moe")
-@torch.compile(fullgraph=True)
 class NeighborMoE(MoEBase):
     def __init__(
         self,
@@ -235,7 +223,6 @@ class NeighborMoE(MoEBase):
         num_fluid_params: int,
         num_experts: int,
         topk: int,
-        load_balance_loss_weight: float,
     ):
         super().__init__(
             input_fields=input_fields,
@@ -247,7 +234,6 @@ class NeighborMoE(MoEBase):
             num_fluid_params=num_fluid_params,
             num_experts=num_experts,
             topk=topk,
-            load_balance_loss_weight=load_balance_loss_weight,
         )
         self.blocks = nn.ModuleList([
             TransformerNeighborMoEBlock(
@@ -255,7 +241,8 @@ class NeighborMoE(MoEBase):
                 num_heads=num_heads,
                 num_experts=num_experts,
                 topk=topk,
-                load_balance_loss_weight=load_balance_loss_weight,
+                drop_path_prob=self.drop_path_probs[idx].item(),
+                num_fluid_params=num_fluid_params,
             )
-            for _ in range(processor_blocks)
+            for idx in range(processor_blocks)
         ])

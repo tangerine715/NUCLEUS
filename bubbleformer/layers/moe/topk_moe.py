@@ -236,6 +236,8 @@ class TopkMoEOutput:
             num_experts=self.num_experts,
         )
 
+# grouped_mm is cannot be cuda-graphed due to a host-device transfer, so cannot use "reduced-overhead"
+# (The offsets `offs` are moved to the CPU, and then moved back to the device when iterating over each gemm.)
 @torch.compile(fullgraph=True)
 class TopkMoE(nn.Module):
     def __init__(
@@ -283,8 +285,6 @@ class TopkMoE(nn.Module):
         # so the input data has to be truncated to bfloat 16.
         groups = x.to(torch.bfloat16)[router_output.indices // self.topk]        
 
-        # On ampere, grouped_mm has a host-device transfer, so it's not cuda-graph-able.
-        # (The offsets are moved to the CPU, and then moved back to the device when iterating over each gemm.)
         groups = torch.nn.functional.grouped_mm(groups, self.w1.mT, offs=router_output.group_indices)
         groups = F.gelu(groups)
         groups = torch.nn.functional.grouped_mm(groups, self.w2.mT, offs=router_output.group_indices)

@@ -409,7 +409,6 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         inp = batch.get_input()
         torch.compiler.cudagraph_mark_step_begin()
         pred, moe_outputs = self.model(inp)
-        torch.compiler.cudagraph_mark_step_end()
 
         data_loss = self.criterion(pred, batch.target)
 
