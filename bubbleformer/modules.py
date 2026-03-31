@@ -389,12 +389,12 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         return pinned_batch.to(device, non_blocking=True)
 
     def get_noise_scale(self):
-        max_noise_scale = 1.0
         # During learning rate warmup, no noise is added.
         if self.global_step < self.scheduler_cfg["params"]["warmup"]:
             return 0.0
+        max_noise_scale = 1.0
         # ramp up noise scale in first half of training.
-        elif self.global_step < self.t_max // 2:
+        if self.global_step < self.t_max // 2:
             max_scale_at_step = max_noise_scale * (self.global_step / (self.t_max // 2))
             return random.uniform(0, max_scale_at_step)
         else:
@@ -405,7 +405,10 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         batch: CollatedBatch,
         batch_idx: int
     ) -> torch.Tensor:
-        batch.noise_(self.get_noise_scale())
+    
+        with torch.no_grad():
+            batch.noise_(self.get_noise_scale())
+            
         inp = batch.get_input()
         torch.compiler.cudagraph_mark_step_begin()
         pred, moe_outputs = self.model(inp)
@@ -451,10 +454,13 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
                 schedulers = [schedulers]
             for scheduler in schedulers:
                 scheduler.step()
+                
+        mse_loss = torch.nn.functional.mse_loss(pred.detach(), batch.target.detach())
 
         log_dict = {
             "train/loss": loss,
             "train/data_loss": data_loss,
+            "train/mse_loss": mse_loss,
             "train/step": self.global_step,
             "train/learning_rate": self.get_current_lr(),
         }
@@ -467,10 +473,10 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             with torch.no_grad():
                 log_dict["train/input_mean"] = inp.input.mean().item()
                 log_dict["train/input_std"] = inp.input.std().item()
-                log_dict["train/target_diff_mean"] = (batch.target - inp.input).mean().item()
-                log_dict["train/target_diff_std"] = (batch.target - inp.input).std().item()
-                log_dict["train/pred_diff_mean"] = (pred - inp.input).mean().item()
-                log_dict["train/pred_diff_std"] = (pred - inp.input).std().item()
+                log_dict["train/target_mean"] = batch.target.mean().item()
+                log_dict["train/target_std"] = batch.target.std().item()
+                log_dict["train/pred_mean"] = pred.mean().item()
+                log_dict["train/pred_std"] = pred.std().item()
                 log_dict = self.moe_metrics(moe_outputs, log_dict, "train")
 
         self.default_log_dict(log_dict)
@@ -488,8 +494,12 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
         if batch_idx == 0:
             self.validation_sample = (batch.input.detach(), batch.target.detach(), pred.detach())
 
+        mse_loss = torch.nn.functional.mse_loss(pred.detach(), batch.target.detach())
+
         log_dict = {
             "val/loss": loss,
+            "val/mse_loss": mse_loss,
+
         }
         log_dict = self.moe_metrics(moe_outputs, log_dict, "val")
         self.default_log_dict(log_dict)
