@@ -462,7 +462,7 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             mse_loss = torch.nn.functional.mse_loss(pred.detach(), batch.target.detach())
             absmax_error = (pred.detach() - batch.target.detach()).abs().max()
             eikonal_error = abs(1 - eikonal(pred[..., 0].detach(), batch.dx[0].item(), batch.dy[0].item()))
-            liquid_divergence = liquid_divergence(pred[..., 2].detach(), pred[..., 3].detach(), batch.dx[0].item(), batch.dy[0].item())
+            liquid_divergence_value = liquid_divergence(pred[..., 2].detach(), pred[..., 3].detach(), batch.dx[0].item(), batch.dy[0].item())
 
         log_dict = {
             "train/loss": loss,
@@ -471,7 +471,7 @@ class MoEConditionedForecastModule(ConditionedForecastModule):
             "train/mse_loss": mse_loss,
             "train/absmax_error": absmax_error,
             "train/eikonal_loss": eikonal_error,
-            "train/liquid_divergence": liquid_divergence,
+            "train/liquid_divergence": liquid_divergence_value,
             "train/step": self.global_step,
             "train/learning_rate": self.get_current_lr(),
         }
