@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-@torch.compile(fullgraph=True)
 class GeluMLP(nn.Module):
     """
     Multi-layer perceptron with a hidden layer and GELU activation

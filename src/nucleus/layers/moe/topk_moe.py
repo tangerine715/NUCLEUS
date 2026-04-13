@@ -240,7 +240,6 @@ class TopkMoEOutput:
 
 # grouped_mm is cannot be cuda-graphed due to a host-device transfer, so cannot use "reduced-overhead"
 # (The offsets `offs` are moved to the CPU, and then moved back to the device when iterating over each gemm.)
-@torch.compile(fullgraph=True)
 class TopkMoE(nn.Module):
     def __init__(
         self,
