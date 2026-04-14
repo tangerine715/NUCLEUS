@@ -7,6 +7,7 @@ import h5py
 import json
 import matplotlib.pyplot as plt
 import os
+import datasets
 
 class DataDistribution:
     def __init__(self, bins, range):
@@ -14,6 +15,7 @@ class DataDistribution:
         self.range = range
         self.hist = np.zeros(bins - 1)
         self.count = 0
+        self.ds = datasets.load_dataset("hpcforge/BubbleML_2")
         
     def update(self, value):
         self.hist += np.histogram(value, bins=self.bins, range=self.range)[0]
