@@ -33,6 +33,7 @@ dependencies = [
     "imgcat",
     "pytest",
     "diffusers>=0.37.1",
+    "accelerate>=1.13.0",
 ]
 
 [project.optional-dependencies]

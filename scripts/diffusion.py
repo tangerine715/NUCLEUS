@@ -190,6 +190,9 @@ def main(cfg: DictConfig):
 
     model_name = cfg.model_cfg.name
 
+    # model_kwargs = OmegaConf.to_container(cfg.model_cfg.params, resolve=True)
+
+
     model_kwargs = {
         "input_fields": 4,
         "output_fields": 4,
@@ -206,28 +209,32 @@ def main(cfg: DictConfig):
         model_kwargs["num_experts"] = cfg.model_cfg.params.num_experts
         model_kwargs["topk"] = cfg.model_cfg.params.topk
 
+
     model = get_model(model_name, **model_kwargs)
     model = model.to(device)
     model_data = torch.load(cfg.checkpoint_path, map_location=device, weights_only=False)
-        
+            
     weight_state_dict = OrderedDict()
     for key, val in model_data["state_dict"].items():
-        name = key[6:]
+        print(key, val.shape)
+        if isinstance(model, LightningModule):
+            name = key
+        else:
+            name = key[6:]
         weight_state_dict[name] = val
     del model_data
     model.load_state_dict(weight_state_dict)
     model.eval()
 
+
     normalizer = get_normalizer(OmegaConf.to_container(cfg.normalizer_cfg, resolve=True))
     
     # Rollouts are saved in the directory containing the checkpoint
-    print("rollouts yay", flush=True)
-    save_root = pathlib.Path(cfg.checkpoint_path).parent / "inference_rollouts"
+    save_root = pathlib.Path(cfg.checkpoint_path).parent / "rollouts"
     save_root.mkdir(parents=True, exist_ok=True)
     all_test_results = []
     for test_file_path in cfg.data_cfg.test_paths:
-        print(f'at {test_file_path}', flush=True)
-        test_results: TestResults = run_test(cfg, model, normalizer, test_file_path, max_timesteps=300)
+        test_results: TestResults = run_test(cfg, model, normalizer, test_file_path, max_timesteps=1000)
         all_test_results.append(test_results)
 
         save_dir = save_root / f"{test_results.case_name}"
@@ -237,11 +244,15 @@ def main(cfg: DictConfig):
            rollout=test_results.preds,
            test_results=test_results,
            step_size=5,
+            include_ground_truth=True,
+        )
+        plot_distribution(
+            save_dir=save_dir,
+            rollout=test_results.preds,
+            test_results=test_results,
         )
         
     torch.save(all_test_results, save_root / "test_results_reinit.pt")
-    print("saved rollouts yay", flush=True)
-
 if __name__ == "__main__":
     # pylint: disable=no-value-for-parameter
     main()
