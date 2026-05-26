@@ -92,7 +92,7 @@ train_paths:
   #- /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-152.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-154.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-155.hdf5
-  - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-156.hdf5
+  # - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-156.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-158.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-160.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-162.hdf5
@@ -101,7 +101,7 @@ train_paths:
   # 168 has NaN values
   #- /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-168.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-170.hdf5
-  - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-172.hdf5
+  # - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-172.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-174.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-176.hdf5
   - /share/crsp/lab/amowli/share/BubbleML_2/PoolBoiling-Subcooled-LN2-2D/Twall_-178.hdf5

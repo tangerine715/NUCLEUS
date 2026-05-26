@@ -32,6 +32,7 @@ dependencies = [
     "rotary-embedding-torch",
     "imgcat",
     "pytest",
+    "diffusers>=0.37.1",
 ]
 
 [project.optional-dependencies]
@@ -41,8 +42,8 @@ cpu = [
     "natten"
 ]
 cu128 = [
-    "torch==2.10.0",
-    "torchvision",
+  "torch==2.10.0; sys_platform == 'linux'",
+  "torchvision; sys_platform == 'linux'",
 ]
 poseidon = [
     # Poseidon relies on a swinv2 module that breaks with newer versions of Transformers.
