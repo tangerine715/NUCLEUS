@@ -7,7 +7,6 @@ from nucleus.data import ForecastDataset, InMemForecastDataset
 from nucleus.data.layout import convert_layout
 from nucleus.layers.moe.topk_moe import TopkMoEOutput
 from nucleus.utils.physical_metrics import PhysicalMetrics, BubbleMetrics, physical_metrics, bubble_metrics
-from nucleus.baseline.poseidon import ScOTOutput
 from nucleus.baseline.moe_dpot import MoEPOTNet
 
 @dataclass
@@ -80,6 +79,7 @@ def clip_liquid_temp(preds, fluid_params):
     return temp
     
 def run_test(cfg, model, normalizer, test_file_path: str, max_timesteps: int):
+    from nucleus.baseline.poseidon import ScOTOutput
     test_dataset = InMemForecastDataset(
         filenames=[test_file_path],
         input_fields=["dfun", "temperature", "velx", "vely"],
