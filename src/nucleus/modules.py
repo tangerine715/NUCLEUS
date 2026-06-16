@@ -126,12 +126,11 @@ class ForecastModule(L.LightningModule):
 
     def training_step(
         self,
-        batch: Tuple[torch.Tensor, torch.Tensor],
+        batch: CollatedBatch,
         batch_idx: int
     ) -> torch.Tensor:
-        inp, tgt = batch
-        pred = self.model(inp)
-        loss = self.criterion(pred, tgt)
+        pred = self.model(batch.input)
+        loss = self.criterion(pred, batch.target)
 
         self.default_log_dict({
             "train/loss": loss,
@@ -142,14 +141,13 @@ class ForecastModule(L.LightningModule):
 
     def validation_step(
         self,
-        batch: Tuple[torch.Tensor, torch.Tensor],
+        batch: CollatedBatch,
         batch_idx: int
     ) -> torch.Tensor:
-        inp, tgt = batch
-        pred = self.model(inp)
-        loss = self.criterion(pred, tgt)
+        pred = self.model(batch.input)
+        loss = self.criterion(pred, batch.target)
         if batch_idx == 0:
-            self.validation_sample = (inp.detach(), tgt.detach(), pred.detach())
+            self.validation_sample = (batch.input.detach(), batch.target.detach(), pred.detach())
         self.default_log_dict({"val/loss": loss})
         return loss
 
