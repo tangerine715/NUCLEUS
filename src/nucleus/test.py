@@ -8,6 +8,9 @@ from nucleus.data.layout import convert_layout
 from nucleus.layers.moe.topk_moe import TopkMoEOutput
 from nucleus.utils.physical_metrics import PhysicalMetrics, BubbleMetrics, physical_metrics, bubble_metrics
 from nucleus.baseline.moe_dpot import MoEPOTNet
+from nucleus.utils.sdf_reinit import (
+    sdf_reinit_sussman
+)
 
 @dataclass
 class TestResults:
