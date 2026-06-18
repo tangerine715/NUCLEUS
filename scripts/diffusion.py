@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use("Agg")
 from collections import OrderedDict
 
 import torch
@@ -16,6 +18,9 @@ from nucleus.data.normalize import get_normalizer
 from nucleus.models import get_model
 from nucleus.utils.set_fp32_precision import set_fp32_precision
 from nucleus.utils.sdf_reinit import sdf_reinit_sussman
+from nucleus.utils.physical_metrics import PhysicalMetrics, BubbleMetrics
+from nucleus.test import TestResults
+from nucleus.plot.plotting import plot_rollout
 from einops import rearrange
 from pathlib import Path
 
@@ -95,6 +100,35 @@ def main(cfg: DictConfig):
             return rearrange(x, "b (t c) h w -> b t h w c", t=T)
         return rearrange(x, "b (t c) h w -> b t c h w", t=T)
 
+    def _dummy_metrics(B, T_rollout, H, W):
+        pm = PhysicalMetrics(
+            eikonal=torch.zeros(B, T_rollout),
+            heatflux=torch.zeros(B, T_rollout),
+            heatflux_at_heater=torch.zeros(B, T_rollout),
+            liquid_divergence=torch.zeros(B, T_rollout),
+            mean_liquid_temperature=torch.zeros(B, T_rollout),
+            liquid_temperature_at_heater=torch.zeros(B, T_rollout, W),
+            vapor_volume=torch.zeros(B, T_rollout),
+            vapor_volume_at_height=torch.zeros(B, T_rollout, H),
+            temperature_distribution=torch.zeros(B, 100),
+            velx_distribution=torch.zeros(B, 100),
+            vely_distribution=torch.zeros(B, 100),
+            mean_liquid_x_velocity=torch.zeros(B, T_rollout),
+            mean_liquid_y_velocity=torch.zeros(B, T_rollout),
+            mean_vapor_x_velocity=torch.zeros(B, T_rollout),
+            mean_vapor_y_velocity=torch.zeros(B, T_rollout),
+            mean_interface_x_velocity=torch.zeros(B, T_rollout),
+            mean_interface_y_velocity=torch.zeros(B, T_rollout),
+        )
+        bm = BubbleMetrics(
+            bubble_labels=torch.zeros(B, T_rollout, H, W, dtype=torch.long),
+            bubble_count=torch.zeros(B, T_rollout),
+            bubble_volume=[[] for _ in range(B)],
+            bubble_x_velocity=[[] for _ in range(B)],
+            bubble_y_velocity=[[] for _ in range(B)],
+        )
+        return pm, bm
+
     # ======================== TRAINING ========================
     unet.train()
     global_step = 0
@@ -137,7 +171,20 @@ def main(cfg: DictConfig):
     unet.eval()
     num_inference_steps = 20
     scheduler.set_timesteps(num_inference_steps)
-    save_dir = Path(cfg.log_dir) / "diffusion_rollout" if cfg.get("log_dir") else Path("diffusion_rollout")
+    noise_level_ratio = 0.3
+
+    pretrained_rollout = None
+    if cfg.get("rollout_path"):
+        data = torch.load(cfg.rollout_path, map_location="cpu", weights_only=False)
+        if isinstance(data, list):
+            pretrained_rollout = data[0].preds.squeeze(0)
+        elif isinstance(data, dict):
+            pretrained_rollout = data["preds"].squeeze(0)
+        else:
+            pretrained_rollout = data.preds.squeeze(0)
+        print(f"Loaded pretrained rollout with shape {pretrained_rollout.shape}")
+
+    save_dir = Path(get_original_cwd()) / "diffusion_rollout"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     for test_file_path in cfg.data_cfg.test_paths:
@@ -157,6 +204,8 @@ def main(cfg: DictConfig):
         skip_itrs = test_dataset.future_time_window
         preds_list = []
         targets_list = []
+        noise_level = int(scheduler.config.num_train_timesteps * noise_level_ratio)
+        prev_clean_flat = None
 
         with torch.no_grad():
             for itr in range(0, len(test_dataset), skip_itrs):
@@ -173,19 +222,35 @@ def main(cfg: DictConfig):
 
                 inp_flat = _flatten(batch.input)
 
-                raw = pretrained(batch.get_input())
-                pred_raw = raw[0] if isinstance(raw, tuple) else raw
+                if pretrained_rollout is not None:
+                    start = itr // skip_itrs * T
+                    pred_raw = pretrained_rollout[start:start + T].unsqueeze(0).to(device)
+                    if layout != "t h w c":
+                        pred_raw = convert_layout(pred_raw, target_layout=layout, source_layout="t h w c")
+                    pred_raw = normalizer.normalize(pred_raw, bulk_temp, layout=layout)
+                else:
+                    raw = pretrained(batch.get_input())
+                    pred_raw = raw[0] if isinstance(raw, tuple) else raw
                 pred_flat = _flatten(pred_raw)
 
-                noise = torch.randn(1, T * C, *inp_flat.shape[2:], device=device)
-                noisy = noise.clone()
+                if prev_clean_flat is None:
+                    noise = torch.randn(1, T * C, *inp_flat.shape[2:], device=device)
+                    noisy = noise.clone()
+                else:
+                    noise = torch.randn_like(prev_clean_flat)
+                    noisy = scheduler.add_noise(prev_clean_flat, noise, torch.full((1,), noise_level, device=device))
 
                 for t in scheduler.timesteps:
+                    if prev_clean_flat is not None and t > noise_level:
+                        continue
                     model_input = torch.cat([inp_flat, pred_flat, noisy], dim=1)
                     pn = unet(model_input, torch.full((1,), t, device=device, dtype=torch.long)).sample
                     noisy = scheduler.step(pn, t, noisy).prev_sample
 
-                pred = _unflatten(noisy)
+                pred_flat_clean = noisy
+                prev_clean_flat = pred_flat_clean
+
+                pred = _unflatten(pred_flat_clean)
                 pred = normalizer.unnormalize(pred, bulk_temp, layout=layout)
                 tgt = normalizer.unnormalize(batch.target, bulk_temp, layout=layout)
 
@@ -211,8 +276,35 @@ def main(cfg: DictConfig):
         preds = convert_layout(preds, target_layout="t h w c", source_layout=layout)
         targets = convert_layout(targets, target_layout="t h w c", source_layout=layout)
 
+        fluid_params = test_dataset.fluid_params[0]
+        B, T_rollout, H, W, _ = preds.shape
+        pred_pm, pred_bm = _dummy_metrics(B, T_rollout, H, W)
+        tgt_pm, tgt_bm = _dummy_metrics(B, T_rollout, H, W)
+        case_name = f"{fluid_params['setup']}_{fluid_params['liquid']}_{fluid_params['heater']['wallTemp']}"
+        test_results = TestResults(
+            case_name=case_name,
+            preds=preds,
+            targets=targets,
+            pred_physical_metrics=pred_pm,
+            target_physical_metrics=tgt_pm,
+            pred_bubble_metrics=pred_bm,
+            target_bubble_metrics=tgt_bm,
+            moe_outputs=[],
+            fluid_params=fluid_params,
+        )
+
+        case_dir = save_dir / case_name
+        case_dir.mkdir(parents=True, exist_ok=True)
+        plot_rollout(
+            save_dir=str(case_dir),
+            rollout=preds,
+            test_results=test_results,
+            step_size=5,
+            include_ground_truth=True,
+        )
+
         result_path = save_dir / f"{Path(test_file_path).stem}_results.pt"
-        torch.save({"preds": preds, "targets": targets}, result_path)
+        torch.save(test_results, result_path)
         print(f"Saved rollout to {result_path}")
 
 
