@@ -1,15 +1,19 @@
+from collections import OrderedDict
+
 import torch
 import torch.nn.functional as F
-from diffusers.models.unets.unet_2d import UNet2DModel
-from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+from diffusers import UNet2DModel, DDIMScheduler
 import hydra
+from hydra.utils import get_original_cwd
+from lightning import seed_everything
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
-from lightning import seed_everything
+
 from nucleus.data import InMemForecastDataset
 from nucleus.data.batching import collate
-from nucleus.data.normalize import get_normalizer
 from nucleus.data.layout import convert_layout
+from nucleus.data.normalize import get_normalizer
+from nucleus.models import get_model
 from nucleus.utils.set_fp32_precision import set_fp32_precision
 from nucleus.utils.sdf_reinit import sdf_reinit_sussman
 from einops import rearrange
@@ -27,6 +31,26 @@ def main(cfg: DictConfig):
     T = cfg.history_time_window
     C = 4
 
+    # ---------- pre-trained model (frozen) ----------
+    ckpt = torch.load(cfg.checkpoint_path, map_location=device, weights_only=False)
+    hp = ckpt.get("hyper_parameters", {})
+    pt_cfg = hp.get("model_cfg", OmegaConf.to_container(cfg.model_cfg, resolve=True))
+    model_kwargs = dict(pt_cfg["params"])
+    for key in ("load_balance_loss_weight", "z_loss_weight", "pushforward_prob",
+                "pushforward_start_step", "pushforward_decay_rate", "num_windows"):
+        model_kwargs.pop(key, None)
+    model_kwargs["input_fields"] = len(cfg.data_cfg.input_fields)
+    model_kwargs["output_fields"] = len(cfg.data_cfg.output_fields)
+    pretrained = get_model(pt_cfg["name"], **model_kwargs).to(device)
+    state = OrderedDict()
+    for k, v in ckpt["state_dict"].items():
+        name = k[6:] if k.startswith("model.") else k
+        state[name] = v
+    pretrained.load_state_dict(state)
+    pretrained.eval()
+    pretrained.requires_grad_(False)
+
+    # ---------- diffusion dataset ----------
     train_dataset = InMemForecastDataset(
         filenames=cfg.data_cfg.train_paths,
         input_fields=cfg.data_cfg.input_fields,
@@ -49,41 +73,50 @@ def main(cfg: DictConfig):
         collate_fn=collate,
     )
 
+    # ---------- diffusion UNet (trained) ----------
     unet = UNet2DModel(
         sample_size=None,
-        in_channels=2 * T * C,
+        in_channels=3 * T * C,
         out_channels=T * C,
         block_out_channels=(64, 128, 256, 512),
         layers_per_block=2,
     ).to(device)
 
-    scheduler = DDIMScheduler(
-        num_train_timesteps=100, beta_start=0.0001, beta_end=0.02
-    )
-
+    scheduler = DDIMScheduler(num_train_timesteps=100, beta_start=0.0001, beta_end=0.02)
     optimizer = torch.optim.AdamW(unet.parameters(), lr=1e-4)
 
-    # Training
+    def _flatten(x):
+        if layout == "t h w c":
+            return rearrange(x, "b t h w c -> b (t c) h w")
+        return rearrange(x, "b t c h w -> b (t c) h w")
+
+    def _unflatten(x):
+        if layout == "t h w c":
+            return rearrange(x, "b (t c) h w -> b t h w c", t=T)
+        return rearrange(x, "b (t c) h w -> b t c h w", t=T)
+
+    # ======================== TRAINING ========================
     unet.train()
     global_step = 0
     for epoch in range(1000):
         for batch in train_dataloader:
             batch = batch.to(device)
 
-            if layout == "t h w c":
-                inp = rearrange(batch.input, "b t h w c -> b (t c) h w")
-                tgt = rearrange(batch.target, "b t h w c -> b (t c) h w")
-            else:
-                inp = rearrange(batch.input, "b t c h w -> b (t c) h w")
-                tgt = rearrange(batch.target, "b t c h w -> b (t c) h w")
+            inp_flat = _flatten(batch.input)
+            tgt_flat = _flatten(batch.target)
 
-            noise = torch.randn_like(tgt)
+            with torch.no_grad():
+                raw = pretrained(batch.get_input())
+                pred_raw = raw[0] if isinstance(raw, tuple) else raw
+            pred_flat = _flatten(pred_raw)
+
+            noise = torch.randn_like(tgt_flat)
             timesteps = torch.randint(
-                0, scheduler.config.num_train_timesteps, (inp.shape[0],), device=device
+                0, scheduler.config.num_train_timesteps, (inp_flat.shape[0],), device=device
             ).long()
-            noisy_tgt = scheduler.add_noise(tgt, noise, timesteps)
+            noisy_tgt = scheduler.add_noise(tgt_flat, noise, timesteps)
 
-            model_input = torch.cat([inp, noisy_tgt], dim=1)
+            model_input = torch.cat([inp_flat, pred_flat, noisy_tgt], dim=1)
             pred_noise = unet(model_input, timesteps).sample
 
             loss = F.mse_loss(pred_noise, noise)
@@ -100,9 +133,11 @@ def main(cfg: DictConfig):
         if global_step >= cfg.max_steps:
             break
 
-    # Inference rollout
+    # ======================== INFERENCE ========================
     unet.eval()
-    save_dir = Path("diffusion_rollout")
+    num_inference_steps = 20
+    scheduler.set_timesteps(num_inference_steps)
+    save_dir = Path(cfg.log_dir) / "diffusion_rollout" if cfg.get("log_dir") else Path("diffusion_rollout")
     save_dir.mkdir(parents=True, exist_ok=True)
 
     for test_file_path in cfg.data_cfg.test_paths:
@@ -124,7 +159,7 @@ def main(cfg: DictConfig):
         targets_list = []
 
         with torch.no_grad():
-            for itr in range(0, 1000, skip_itrs):
+            for itr in range(0, len(test_dataset), skip_itrs):
                 data = test_dataset[itr]
                 batch = data.to_collated_batch().to(device)
 
@@ -134,41 +169,25 @@ def main(cfg: DictConfig):
 
                 if len(preds_list) > 0:
                     last_pred = preds_list[-1].unsqueeze(0).to(device)
-                    batch.input = normalizer.normalize(
-                        last_pred, bulk_temp, layout=layout
-                    )
+                    batch.input = normalizer.normalize(last_pred, bulk_temp, layout=layout)
 
-                if layout == "t h w c":
-                    inp_flat = rearrange(batch.input, "b t h w c -> b (t c) h w")
-                else:
-                    inp_flat = rearrange(batch.input, "b t c h w -> b (t c) h w")
+                inp_flat = _flatten(batch.input)
 
-                tgt = batch.target
+                raw = pretrained(batch.get_input())
+                pred_raw = raw[0] if isinstance(raw, tuple) else raw
+                pred_flat = _flatten(pred_raw)
 
                 noise = torch.randn(1, T * C, *inp_flat.shape[2:], device=device)
                 noisy = noise.clone()
 
-                for t in range(scheduler.config.num_train_timesteps - 1, -1, -1):
-                    model_input = torch.cat([inp_flat, noisy], dim=1)
-                    pred_noise = unet(
-                        model_input,
-                        torch.full((1,), t, device=device, dtype=torch.long),
-                    ).sample
-                    noisy = scheduler.step(pred_noise, t, noisy).prev_sample
+                for t in scheduler.timesteps:
+                    model_input = torch.cat([inp_flat, pred_flat, noisy], dim=1)
+                    pn = unet(model_input, torch.full((1,), t, device=device, dtype=torch.long)).sample
+                    noisy = scheduler.step(pn, t, noisy).prev_sample
 
-                pred_flat = noisy
-
-                if layout == "t h w c":
-                    pred = rearrange(
-                        pred_flat, "b (t c) h w -> b t h w c", t=T
-                    )
-                else:
-                    pred = rearrange(
-                        pred_flat, "b (t c) h w -> b t c h w", t=T
-                    )
-
+                pred = _unflatten(noisy)
                 pred = normalizer.unnormalize(pred, bulk_temp, layout=layout)
-                tgt = normalizer.unnormalize(tgt, bulk_temp, layout=layout)
+                tgt = normalizer.unnormalize(batch.target, bulk_temp, layout=layout)
 
                 pred = pred.to(torch.float32).squeeze(0).detach().cpu()
                 tgt = tgt.to(torch.float32).squeeze(0).detach().cpu()
@@ -179,13 +198,9 @@ def main(cfg: DictConfig):
 
                 for t_idx in range(pred.shape[0]):
                     if layout == "t h w c":
-                        pred[t_idx, :, :, 0] = sdf_reinit_sussman(
-                            pred[t_idx, :, :, 0], dx=1 / 4
-                        )
+                        pred[t_idx, :, :, 0] = sdf_reinit_sussman(pred[t_idx, :, :, 0], dx=1 / 4)
                     else:
-                        pred[t_idx, 0, :, :] = sdf_reinit_sussman(
-                            pred[t_idx, 0, :, :], dx=1 / 4
-                        )
+                        pred[t_idx, 0, :, :] = sdf_reinit_sussman(pred[t_idx, 0, :, :], dx=1 / 4)
 
                 preds_list.append(pred)
                 targets_list.append(tgt)
