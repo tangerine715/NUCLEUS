@@ -1,11 +1,9 @@
 import math
-import matplotlib
 from collections import OrderedDict
 
 import torch
 from diffusers.models.unets.unet_2d import UNet2DModel
 from diffusers.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
-from diffusers.training_utils import EMAModel
 import hydra
 from lightning import seed_everything
 from lightning import LightningModule
@@ -89,18 +87,14 @@ def main(cfg: DictConfig):
         out_channels=cfg.history_time_window * C,
         block_out_channels=(64, 128, 256, 512),
         layers_per_block=2,
-        # 32 groups against a 64-channel first level gives only 2 channels/group
-        # (and conv_norm_out, right before the final output conv, uses the same
-        # setting) -- 8 gives a more typical 8/16/32/64 channels per group across
-        # the four levels.
-        norm_num_groups=8,
+        norm_num_groups=32,
     ).to(device)
 
     scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=100)
 
-    lr = cfg.get("lr", 1e-4)
-    lr_warmup_steps = cfg.get("lr_warmup_steps", 500)
-    min_lr_ratio = cfg.get("min_lr_ratio", 0.1)  # decay down to this fraction of `lr` by max_steps
+    lr = cfg.get("lr", 2.5e-4)
+    lr_warmup_steps = cfg.get("lr_warmup_steps", 150)
+    min_lr_ratio = cfg.get("min_lr_ratio", 0.001)  # decay down to this fraction of `lr` by max_steps
     optimizer = torch.optim.AdamW(unet.parameters(), lr=lr)
 
     def _lr_lambda(step):
@@ -113,21 +107,6 @@ def main(cfg: DictConfig):
 
     lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, _lr_lambda)
 
-    # EMA of the UNet weights. Diffusion/flow-matching models are notably sensitive to
-    # this: evaluating with the raw, noisy end-of-training weights tends to produce
-    # visibly noisier/less coherent samples than evaluating with a smoothed average of
-    # recent weights does. use_ema_warmup ramps the effective decay up gradually so the
-    # average isn't dominated by the (mostly random) very-early-training weights.
-    ema_decay = cfg.get("ema_decay", 0.9999)
-    ema_unet = EMAModel(
-        unet.parameters(),
-        decay=ema_decay,
-        use_ema_warmup=True,
-        model_cls=UNet2DModel,
-        model_config=unet.config,
-    )
-    ema_unet.to(device)
-
     # pushforward: fraction of steps where the UNet conditions on the surrogate's
     # own fed-back rollout (instead of ground-truth history) so it sees realistic,
     # imperfect conditioning like it will at inference time.
@@ -135,15 +114,18 @@ def main(cfg: DictConfig):
     pushforward_steps = cfg.get("pushforward_steps", 2)
 
     # warm-start: fraction of training steps where the diffusion target is noised
-    # starting from the previous window (inp_flat) instead of pure Gaussian noise,
-    # restricted to the low-sigma tail (sigma <= noise_level_ratio) -- mirroring the
-    # warm-started rollout used at inference (see noise_level_ratio below), so the
-    # UNet is actually trained on the regime it runs in for every window after the
-    # first, instead of only ever seeing cold-start (pure-noise) denoising.
+    # starting from the previous window (inp_flat) instead of pure Gaussian noise.
+    # The noise *level* for this is no longer a fixed low-sigma ceiling -- it mirrors
+    # the adaptive_ratio formula used at inference exactly (see the inference loop
+    # below), computed per-sample from how much pred_flat disagrees with inp_flat in
+    # the SDF channel. Without this, training only ever pairs inp_flat with low noise,
+    # while inference routinely pushes the warm start up near sigma=1.0 whenever
+    # something topological is happening -- exactly the frames where bubble shape
+    # matters most, and exactly the frames this mismatch was leaving untrained.
     warmstart_prob = cfg.get("warmstart_prob", 0.75)
     noise_level_ratio = cfg.get("noise_level_ratio", 0.2)
+    nucleation_sensitivity = cfg.get("nucleation_sensitivity", 5.0)
     train_sigmas = scheduler.sigmas.to(device)[: scheduler.config.num_train_timesteps]
-    warmstart_timestep_pool = torch.nonzero(train_sigmas <= noise_level_ratio, as_tuple=True)[0]
 
 
     def _flatten(x):
@@ -191,14 +173,27 @@ def main(cfg: DictConfig):
             pred_flat = _flatten(pred_raw)
 
             #sampling
-            use_warmstart = warmstart_timestep_pool.numel() > 0 and torch.rand(()) < warmstart_prob
+            use_warmstart = torch.rand(()) < warmstart_prob
             if use_warmstart:
-                # noise from the previous window, like prev_clean_flat does at inference
+                # Noise from the previous window, like prev_clean_flat does at inference.
+                # The noise level is adaptive per-sample, mirroring adaptive_ratio at
+                # inference: computed from how much pred_flat (this window's raw surrogate
+                # prediction) disagrees with inp_flat (the warm-start base) in the SDF
+                # channel specifically. Bubbles that are nucleating, merging, or detaching
+                # show up as large SDF disagreement, so those samples get pushed toward a
+                # high warm-start noise level too, instead of only ever training on the
+                # calm low-noise regime the old fixed pool was restricted to.
                 base = inp_flat
-                pool_idx = torch.randint(
-                    0, warmstart_timestep_pool.numel(), (inp_flat.shape[0],), device=device
-                )
-                timesteps = warmstart_timestep_pool[pool_idx]
+                pred_unflat_dis = _unflatten(pred_flat)
+                inp_unflat_dis = _unflatten(inp_flat)
+                if layout == "t h w c":
+                    sdf_diff = (pred_unflat_dis[..., 0] - inp_unflat_dis[..., 0]).abs()
+                else:
+                    sdf_diff = (pred_unflat_dis[:, :, 0] - inp_unflat_dis[:, :, 0]).abs()
+                sdf_disagreement = sdf_diff.flatten(1).mean(dim=1)  # (B,) -- per-sample, not a scalar
+                adaptive_ratio = (noise_level_ratio + nucleation_sensitivity * sdf_disagreement).clamp(max=1.0)
+                # nearest available training sigma to each sample's target ratio
+                timesteps = (train_sigmas.unsqueeze(0) - adaptive_ratio.unsqueeze(1)).abs().argmin(dim=1)
             else:
                 # original cold-start behavior: noise from pure Gaussian, full schedule
                 base = tgt_flat
@@ -226,7 +221,6 @@ def main(cfg: DictConfig):
             loss.backward()
             optimizer.step()
             lr_scheduler.step()
-            ema_unet.step(unet.parameters())
             global_step += 1
 
             if global_step % 100 == 0:
@@ -237,37 +231,13 @@ def main(cfg: DictConfig):
         if global_step >= cfg.max_steps:
             break
 
-    # Persist the trained UNet before doing anything else with it. Without this, a large
-    # training run's only output is whatever the rollout/eval loop below produces -- if
-    # that loop errors out, or you want to re-run inference later with different settings,
-    # all the training compute is gone. Saves both the raw and EMA weights since you may
-    # want either later (e.g. resuming training needs the raw optimizer-tracked weights).
-    checkpoint_dir = Path(cfg.log_dir)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    torch.save({
-        "unet_state_dict": unet.state_dict(),
-        "ema_state_dict": ema_unet.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "global_step": global_step,
-    }, checkpoint_dir / "diffusion_unet_checkpoint.pt")
-    print(f"Saved checkpoint to {checkpoint_dir / 'diffusion_unet_checkpoint.pt'}")
-
-    # Evaluate with the EMA weights, not the raw end-of-training weights -- this is the
-    # whole point of tracking the EMA. copy_to overwrites unet's live parameters in place.
-    ema_unet.copy_to(unet.parameters())
-
     #flow matching inference
     unet.eval()
-    # 100 instead of 50: in the warm-start regime, a quiet window near the
-    # noise_level_ratio floor only gets a handful of Euler steps -- doubling the total
-    # step count doubles resolution everywhere, including in that low-budget regime,
-    # which reduces how much discretization error (from large per-step jumps following
-    # a not-perfectly-smooth learned velocity field) shows up directly in the output.
-    num_inference_steps = cfg.get("num_inference_steps", 100)
+    num_inference_steps = 50
     scheduler.set_timesteps(num_inference_steps)
-    # noise_level_ratio (set above) is now used as the *floor* of a per-window adaptive
-    # budget rather than a single fixed value -- see nucleation_sensitivity below.
-    nucleation_sensitivity = cfg.get("nucleation_sensitivity", 5.0)
+    # noise_level_ratio and nucleation_sensitivity (both set above, now also used to
+    # drive the training-time warm-start sampling) together define the *floor* of a
+    # per-window adaptive budget rather than a single fixed value.
 
     pretrained_rollout = None
     if cfg.get("rollout_path"):
@@ -280,7 +250,7 @@ def main(cfg: DictConfig):
             pretrained_rollout = data.preds.squeeze(0)
         print(f"Loaded pretrained rollout with shape {pretrained_rollout.shape}")
 
-    save_dir = Path(cfg.log_dir) / "diffusion_rollout_adaptive2"
+    save_dir = Path(cfg.log_dir) / "diffusion_rollout"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     for test_file_path in cfg.data_cfg.test_paths:
@@ -335,37 +305,38 @@ def main(cfg: DictConfig):
                     pred_raw = normalizer.normalize(pred_raw, bulk_temp, layout=layout)
                 pred_flat = _flatten(pred_raw)
 
-                # Adaptive warm-start budget: widen the noise budget for this window when
-                # the raw surrogate's prediction (pred_flat) disagrees a lot with the
-                # window immediately before it (inp_flat), in the SDF channel specifically
-                # -- that disagreement is the signal that something topological
-                # (nucleation, detachment, merging) is trying to happen, which a small
-                # fixed warm-start budget structurally can't represent (it's built to stay
-                # close to the previous frame). Ordinary slowly-evolving windows keep the
-                # old small budget; windows where the surrogate is "shouting" about a new
-                # bubble get a bigger one. This also covers window 0 now: inp_flat there is
-                # real ground-truth history (no different in kind from any later window's),
-                # so there's no reason for it to be the one frame per rollout that has to
-                # hallucinate structure from pure noise -- training's warm-start branch
-                # (base = inp_flat) already covers exactly this case.
-                pred_unflat = _unflatten(pred_flat)
-                inp_unflat = _unflatten(inp_flat)
-                if layout == "t h w c":
-                    sdf_disagreement = (pred_unflat[..., 0] - inp_unflat[..., 0]).abs().mean().item()
+                if prev_clean_flat is None:
+                    noise = torch.randn(1, cfg.history_time_window * C, *inp_flat.shape[2:], device=device)
+                    noisy = noise.clone()
+                    step_first_step = 0
                 else:
-                    sdf_disagreement = (pred_unflat[:, :, 0] - inp_unflat[:, :, 0]).abs().mean().item()
+                    # Adaptive warm-start budget: widen the noise budget for this window
+                    # when the raw surrogate's prediction (pred_flat) disagrees a lot with
+                    # where the diffusion trajectory currently sits (prev_clean_flat), in
+                    # the SDF channel specifically -- that disagreement is the signal that
+                    # something topological (nucleation, detachment, merging) is trying to
+                    # happen, which a small fixed warm-start budget structurally can't
+                    # represent (it's built to stay close to the previous frame). Ordinary
+                    # slowly-evolving windows keep the old small budget; windows where the
+                    # surrogate is "shouting" about a new bubble get a bigger one.
+                    pred_unflat = _unflatten(pred_flat)
+                    prev_unflat = _unflatten(prev_clean_flat)
+                    if layout == "t h w c":
+                        sdf_disagreement = (pred_unflat[..., 0] - prev_unflat[..., 0]).abs().mean().item()
+                    else:
+                        sdf_disagreement = (pred_unflat[:, :, 0] - prev_unflat[:, :, 0]).abs().mean().item()
 
-                adaptive_ratio = min(1.0, noise_level_ratio + nucleation_sensitivity * sdf_disagreement)
-                step_first_step = (scheduler.sigmas[:-1] - adaptive_ratio).abs().argmin().item()
-                sigma_noise_step = scheduler.sigmas[step_first_step].item()
-                print(f"  itr {itr}: sdf_disagreement={sdf_disagreement:.4f} -> "
-                      f"adaptive_ratio={adaptive_ratio:.3f} (floor={noise_level_ratio})")
+                    adaptive_ratio = min(1.0, noise_level_ratio + nucleation_sensitivity * sdf_disagreement)
+                    step_first_step = (scheduler.sigmas[:-1] - adaptive_ratio).abs().argmin().item()
+                    sigma_noise_step = scheduler.sigmas[step_first_step].item()
+                    print(f"  itr {itr}: sdf_disagreement={sdf_disagreement:.4f} -> "
+                          f"adaptive_ratio={adaptive_ratio:.3f} (floor={noise_level_ratio})")
 
-                sig_noise = torch.full((1,), sigma_noise_step, device=device, dtype=torch.float32)
-                while sig_noise.dim() < inp_flat.dim():
-                    sig_noise = sig_noise.unsqueeze(-1)
-                noise = torch.randn_like(inp_flat)
-                noisy = (1.0 - sig_noise) * inp_flat + sig_noise * noise
+                    sig_noise = torch.full((1,), sigma_noise_step, device=device, dtype=torch.float32)
+                    while sig_noise.dim() < prev_clean_flat.dim():
+                        sig_noise = sig_noise.unsqueeze(-1)
+                    noise = torch.randn_like(prev_clean_flat)
+                    noisy = (1.0 - sig_noise) * prev_clean_flat + sig_noise * noise
 
                 for idx, t in enumerate(scheduler.timesteps):
                     if idx < step_first_step:
