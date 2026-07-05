@@ -185,7 +185,7 @@ def main(cfg: DictConfig):
             pretrained_rollout = data.preds.squeeze(0)
         print(f"Loaded pretrained rollout with shape {pretrained_rollout.shape}")
 
-    save_dir = Path(cfg.log_dir) / "dpm_diffusion_rollout"
+    save_dir = Path(cfg.log_dir) / "dpm_multistep_diffusion_rollout"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     for test_file_path in cfg.data_cfg.test_paths:
