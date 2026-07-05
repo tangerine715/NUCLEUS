@@ -88,7 +88,7 @@ def main(cfg: DictConfig):
         layers_per_block=2,
     ).to(device)
 
-    scheduler = DPMSolverMultistepScheduler(num_train_timesteps=100)
+    scheduler = DPMSolverMultistepScheduler(num_train_timesteps=100, algorithm_type="dpmsolver++", euler_at_final=True)
     optimizer = torch.optim.AdamW(unet.parameters(), lr=1e-4)
 
     def _flatten(x):
