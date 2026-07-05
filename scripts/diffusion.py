@@ -5,7 +5,7 @@ from collections import OrderedDict
 import torch
 import torch.nn.functional as F
 from diffusers.models.unets.unet_2d import UNet2DModel
-from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+from diffusers.schedulers.scheduling_dpmsolver_multistep import DPMSolverMultistepScheduler
 import hydra
 from hydra.utils import get_original_cwd
 from lightning import seed_everything
@@ -88,7 +88,7 @@ def main(cfg: DictConfig):
         layers_per_block=2,
     ).to(device)
 
-    scheduler = DDIMScheduler(num_train_timesteps=100)
+    scheduler = DPMSolverMultistepScheduler(num_train_timesteps=100)
     optimizer = torch.optim.AdamW(unet.parameters(), lr=1e-4)
 
     def _flatten(x):
