@@ -84,7 +84,7 @@ def main(cfg: DictConfig):
         sample_size=None,
         in_channels=3 * T * C,
         out_channels=T * C,
-        block_out_channels=(64, 128, 256, 512),
+        block_out_channels=(128, 256, 512, 1024),
         layers_per_block=2,
     ).to(device)
 
@@ -141,8 +141,17 @@ def main(cfg: DictConfig):
             tgt_flat = _flatten(batch.target)
 
             with torch.no_grad():
+                fluid_params = normalizer.unnormalize_params(batch.fluid_params_dict)
+                bulk_temps = [fp["bulk_temp"] for fp in fluid_params]
                 raw = pretrained(batch.get_input())
                 pred_raw = raw[0] if isinstance(raw, tuple) else raw
+                # pred_raw comes back in physical units -- normalize it onto the same
+                # scale as inp_flat/tgt_flat before concatenating into the UNet input,
+                # otherwise a third of the input channels sits at the wrong scale.
+                pred_raw = torch.stack([
+                    normalizer.normalize(pred_raw[i:i + 1], bulk_temps[i], layout=layout)[0]
+                    for i in range(pred_raw.shape[0])
+                ])
             pred_flat = _flatten(pred_raw)
 
             noise = torch.randn_like(tgt_flat)
@@ -210,6 +219,14 @@ def main(cfg: DictConfig):
 
         with torch.no_grad():
             for itr in range(0, len(test_dataset), skip_itrs):
+                # DPMSolverMultistepScheduler is stateful: step_index, model_outputs, and
+                # lower_order_nums persist across .step() calls and are only cleared inside
+                # set_timesteps(). Reset it at the start of every window, otherwise step_index
+                # keeps climbing past the end of the previous window's schedule, and once a
+                # later window starts skipping its early (already-denoised-enough) steps, the
+                # first real .step() call runs with a stale step_index -- self.sigmas[step_index
+                # + 1] then indexes past the end of `sigmas` and raises IndexError.
+                scheduler.set_timesteps(num_inference_steps)
                 data = test_dataset[itr]
                 batch = data.to_collated_batch().to(device)
 
@@ -232,6 +249,9 @@ def main(cfg: DictConfig):
                 else:
                     raw = pretrained(batch.get_input())
                     pred_raw = raw[0] if isinstance(raw, tuple) else raw
+                    # match the pretrained_rollout branch above (and the training loop):
+                    # pred_raw comes back in physical units and needs normalizing.
+                    pred_raw = normalizer.normalize(pred_raw, bulk_temp, layout=layout)
                 pred_flat = _flatten(pred_raw)
 
                 if prev_clean_flat is None:
