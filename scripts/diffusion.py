@@ -85,7 +85,7 @@ def main(cfg: DictConfig):
         sample_size=None,
         in_channels=3 * cfg.history_time_window * C,
         out_channels=cfg.history_time_window * C,
-        block_out_channels=(64, 128, 256, 512),
+        block_out_channels=(128, 256, 512, 1024),
         layers_per_block=2,
         norm_num_groups=32,
     ).to(device)
@@ -110,7 +110,8 @@ def main(cfg: DictConfig):
     # pushforward: fraction of steps where the UNet conditions on the surrogate's
     # own fed-back rollout (instead of ground-truth history) so it sees realistic,
     # imperfect conditioning like it will at inference time.
-    pushforward_prob = cfg.get("pushforward_prob", 0.5)
+    pushforward_prob = 0
+    # pushforward_prob = cfg.get("pushforward_prob", 0.5)
     pushforward_steps = cfg.get("pushforward_steps", 2)
 
     # warm-start: fraction of training steps where the diffusion target is noised
@@ -122,7 +123,8 @@ def main(cfg: DictConfig):
     # while inference routinely pushes the warm start up near sigma=1.0 whenever
     # something topological is happening -- exactly the frames where bubble shape
     # matters most, and exactly the frames this mismatch was leaving untrained.
-    warmstart_prob = cfg.get("warmstart_prob", 0.75)
+    # warmstart_prob = cfg.get("warmstart_prob", 0.75)
+    warmstart_prob = 0
     noise_level_ratio = cfg.get("noise_level_ratio", 0.2)
     nucleation_sensitivity = cfg.get("nucleation_sensitivity", 5.0)
     train_sigmas = scheduler.sigmas.to(device)[: scheduler.config.num_train_timesteps]
