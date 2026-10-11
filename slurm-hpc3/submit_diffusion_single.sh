@@ -5,9 +5,9 @@
 #SBATCH -o slurm-%x-%j.out
 #SBATCH -e slurm-%x-%j.err
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:RTX6000:1
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --mail-user=tanishs4@uci.edu
 #SBATCH --mail-type=BEGIN,END
 
@@ -40,7 +40,7 @@ python -c 'import torch; print("torch", torch.__version__, "cuda", torch.version
 
 echo "diffusion start!"
 python scripts/diffusion.py \
-    model_cfg=nucleus2/nucleus2_divfree \
+    model_cfg=nucleus2/nucleus2_experiment \
     model_cfg.params.processor_blocks=8 \
     model_cfg.params.embed_dim=512 \
     model_cfg.params.num_experts=6 \
@@ -49,13 +49,13 @@ python scripts/diffusion.py \
     model_cfg.params.patching=Linear \
     model_cfg.params.activation_dtype=float32 \
     data_cfg=singlebubble \
-    normalizer_cfg=divfree \
+    normalizer_cfg=standard \
     pydataset=in_mem_forecast \
     data_dir=/share/crsp/lab/amowli/share/BubbleML_staggered/ \
-    checkpoint_path=/pub/tanishs4/bubbleformer_logs/nucleus2_moe_divfree_singlebubble_2026-10-01_57616757/checkpoints/last.ckpt \
+    checkpoint_path=/pub/tanishs4/bubbleformer_logs/nucleus2_moe_singlebubble_2026-10-08_57936970/checkpoints/last.ckpt \
     history_time_window=8 \
     future_time_window=8 \
     time_step=1 \
     batch_size=4 \
-    max_steps=30000 \
-    log_dir=/pub/tanishs4/bubbleformer_logs/diffusion_single
+    max_steps=100000 \
+    log_dir=/pub/tanishs4/bubbleformer_logs/nucleus2_moe_singlebubble_2026-10-08_57936970

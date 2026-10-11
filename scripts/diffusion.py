@@ -1,4 +1,5 @@
 import math
+import gc
 
 import torch
 from diffusers.models.unets.unet_2d import UNet2DModel
@@ -198,6 +199,16 @@ def main(cfg: DictConfig):
         if global_step >= cfg.max_steps:
             break
 
+    checkpoint_dir = Path(cfg.log_dir) / "diffusion_unet"
+    unet.save_pretrained(checkpoint_dir)
+    print(f"Saved diffusion U-Net to {checkpoint_dir}", flush=True)
+    train_dataset.data.clear()
+    del train_dataloader, train_dataset, optimizer, lr_scheduler
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    print("Released training data; starting rollout", flush=True)
+
     #inference
     unet.eval()
     num_inference_steps = 50
@@ -213,10 +224,11 @@ def main(cfg: DictConfig):
             pretrained_rollout = data.preds.squeeze(0)
         print(f"Loaded pretrained rollout with shape {pretrained_rollout.shape}")
 
-    save_dir = Path(cfg.log_dir) / "TEST_diffusion_rollout"
+    save_dir = Path(cfg.log_dir) / "20000_and_lowish_mem_TEST_diffusion_rollout"
     save_dir.mkdir(parents=True, exist_ok=True)
 
     for test_file_path in cfg.data_cfg.test_paths:
+        print(f"Loading test trajectory: {test_file_path}", flush=True)
         test_dataset = InMemForecastDataset(
             filenames=[test_file_path],
             input_fields=cfg.data_cfg.input_fields,
@@ -233,6 +245,16 @@ def main(cfg: DictConfig):
             global_params=model.expected_global_params,
         )
 
+        fluid_params = test_dataset.sim_params[0]
+        grid_height, grid_width = test_dataset.data[0][cfg.data_cfg.input_fields[0]].shape[-2:]
+        dx = (fluid_params["x_max"] - fluid_params["x_min"]) / grid_width
+        dy = (fluid_params["y_max"] - fluid_params["y_min"]) / grid_height
+        xcoords = fluid_params["x_min"] + (torch.arange(grid_width) + 0.5) * dx
+        heater_min = fluid_params["heater"]["xMin"]
+        heater_max = fluid_params["heater"]["xMax"]
+        case_name = f"{fluid_params['setup']}_{fluid_params['liquid']}_{fluid_params['heater']['wallTemp']}"
+        case_dir = save_dir / case_name
+        case_dir.mkdir(parents=True, exist_ok=True)
         skip_itrs = test_dataset.future_time_window
         preds_list = []
         targets_list = []
@@ -292,15 +314,25 @@ def main(cfg: DictConfig):
 
                 for t_idx in range(pred.shape[0]):
                     if layout == "t h w c":
-                        pred[t_idx, :, :, 0] = sdf_reinit_sussman(pred[t_idx, :, :, 0], dx=1 / 4)
+                        pred[t_idx, :, :, 0] = sdf_reinit_sussman(pred[t_idx, :, :, 0], dx=dx, dy=dy)
                     else:
-                        pred[t_idx, 0, :, :] = sdf_reinit_sussman(pred[t_idx, 0, :, :], dx=1 / 4)
+                        pred[t_idx, 0, :, :] = sdf_reinit_sussman(pred[t_idx, 0, :, :], dx=dx, dy=dy)
 
                 preds_list.append(pred)
                 targets_list.append(tgt)
+                torch.save(
+                    {"preds": pred, "targets": tgt, "start_index": itr},
+                    case_dir / f"window_{itr:06d}.pt",
+                )
+                if itr // skip_itrs % 10 == 0:
+                    print(f"Rollout {case_name}: {itr + skip_itrs}/{len(test_dataset)}", flush=True)
 
         preds = torch.cat(preds_list, dim=0)[None, ...]
         targets = torch.cat(targets_list, dim=0)[None, ...]
+        del preds_list, targets_list
+        test_dataset.data.clear()
+        gc.collect()
+        print(f"Computing metrics for {case_name}", flush=True)
 
         preds = convert_layout(preds, target_layout="t h w c", source_layout=layout)
         targets = convert_layout(targets, target_layout="t h w c", source_layout=layout)
@@ -308,23 +340,21 @@ def main(cfg: DictConfig):
         fluid_params = test_dataset.sim_params[0]
         B, T_rollout, H, W, _ = preds.shape
 
-        dx = 1/4
-        dy = dx
         bulk_temp = fluid_params["bulk_temp"]
         heater_temp = fluid_params["heater"]["wallTemp"]
         pred_pm = physical_metrics(
             preds[..., 0], preds[..., 1], preds[..., 2], preds[..., 3],
-            heater_min=-5.25, heater_max=5.25,
+            heater_min=heater_min, heater_max=heater_max,
             bulk_temp=bulk_temp, heater_temp=heater_temp,
-            xcoords=torch.arange(-8, 8, dx) + dx / 2,
+            xcoords=xcoords,
             dx=dx, dy=dy,
         )
         pred_bm = bubble_metrics(preds[..., 0], preds[..., 2], preds[..., 3], dx=dx, dy=dy)
         tgt_pm = physical_metrics(
             targets[..., 0], targets[..., 1], targets[..., 2], targets[..., 3],
-            heater_min=-5.25, heater_max=5.25,
+            heater_min=heater_min, heater_max=heater_max,
             bulk_temp=bulk_temp, heater_temp=heater_temp,
-            xcoords=torch.arange(-8, 8, dx) + dx / 2,
+            xcoords=xcoords,
             dx=dx, dy=dy,
         )
         tgt_bm = bubble_metrics(targets[..., 0], targets[..., 2], targets[..., 3], dx=dx, dy=dy)
@@ -350,7 +380,10 @@ def main(cfg: DictConfig):
             test_results=test_results,
             step_size=5,
             include_ground_truth=True,
+            n_jobs=1,
         )
+        del test_results, preds, targets, test_dataset
+        gc.collect()
 
 if __name__ == "__main__":
     main()
