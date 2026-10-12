@@ -7,7 +7,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:RTX6000:1
-#SBATCH --time=24:00:00
+#SBATCH --time=50:00:00
 #SBATCH --mail-user=tanishs4@uci.edu
 #SBATCH --mail-type=BEGIN,END
 

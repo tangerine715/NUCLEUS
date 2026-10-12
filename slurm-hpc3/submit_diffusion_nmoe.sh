@@ -2,24 +2,26 @@
 #SBATCH -A amowli_lab
 #SBATCH -p free-gpu32
 #SBATCH --job-name=Nucleus
-#SBATCH -o slurm-dnmoe-%x-%j.out
-#SBATCH -e slurm-dnmoe-%x-%j.err
+#SBATCH -o slurm-%x-%j.out
+#SBATCH -e slurm-%x-%j.err
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:RTX6000:1
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --mail-user=tanishs4@uci.edu
 #SBATCH --mail-type=BEGIN,END
 
 set -euo pipefail
 
-cd /pub/tanishs4/NUCLEUS
+if [[ $# -lt 1 ]]; then
+    echo "Usage: sbatch $0 CHECKPOINT_PATH [Hydra overrides...]" >&2
+    exit 1
+fi
+diffusion_checkpoint_path="$1"
+diffusion_log_dir="$(dirname "$(dirname "$diffusion_checkpoint_path")")/diffusion"
+shift
 
-# Fail loudly here rather than 20 minutes later inside torch. If the GPU cgroup
-# wasn't set up for this job, nvidia-smi is already broken at this point.
-echo "=== node: $(hostname) ==="
-echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
-nvidia-smi
+cd /pub/tanishs4/NUCLEUS
 
 echo "env setup"
 uv venv "$TMPDIR/NUCLEUS"
@@ -28,14 +30,26 @@ export PYTHONPYCACHE_DIR="$TMPDIR/pycache"
 export PYTHONUNBUFFERED=1
 
 echo "deps"
-uv sync --no-cache --active --extra cu128
-uv pip install -e .
-uv pip install natten==0.21.5+torch2100cu128 -f https://whl.natten.org
+uv sync --no-cache --active --extra cu130
+
+uv pip check
+python -c 'import torchvision; from diffusers import UNet2DModel; import natten; print("torchvision", torchvision.__version__, "natten", natten.__version__)'
 
 python -c 'import torch; print("torch", torch.__version__, "cuda", torch.version.cuda, "avail", torch.cuda.is_available(), torch.cuda.get_device_name(0))'
 
 echo "diffusion start!"
 python scripts/diffusion.py \
-    checkpoint_path=/pub/tanishs4/bubbleformer_logs/neighbor_moe_poolboiling64_2026-09-25_56787438/checkpoints/last.ckpt \
-    max_steps=30000 \
-    log_dir=/pub/tanishs4/bubbleformer_logs/neighbor_moe_poolboiling64_2026-09-25_56787438/checkpoints
+    model_cfg=nucleus2/nucleus2_experiment \
+    model_cfg.params.patch_size=16 \
+    data_cfg=poolboiling \
+    normalizer_cfg=standard \
+    pydataset=in_mem_forecast \
+    data_dir=/share/crsp/lab/amowli/share/BubbleML_2/ \
+    checkpoint_path="$diffusion_checkpoint_path" \
+    history_time_window=8 \
+    future_time_window=8 \
+    time_step=1 \
+    batch_size=4 \
+    max_steps=6 \
+    log_dir="$diffusion_log_dir" \
+    "$@"
