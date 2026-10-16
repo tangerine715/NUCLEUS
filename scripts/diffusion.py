@@ -257,6 +257,8 @@ def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
 
     save_dir = Path(cfg.log_dir) / "20000_and_lowish_mem_TEST_diffusion_rollout"
     save_dir.mkdir(parents=True, exist_ok=True)
+    sdf_absolute_error_sum = 0.0
+    sdf_value_count = 0
 
     for test_file_path in cfg.data_cfg.test_paths:
         print(f"Loading test trajectory: {test_file_path}", flush=True)
@@ -368,6 +370,26 @@ def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
         preds = convert_layout(preds, target_layout="t h w c", source_layout=layout)
         targets = convert_layout(targets, target_layout="t h w c", source_layout=layout)
 
+        sdf_field_index = list(cfg.data_cfg.output_fields).index("dfun")
+        sdf_absolute_error = (
+            preds[..., sdf_field_index] - targets[..., sdf_field_index]
+        ).abs()
+        sdf_mae_per_frame = sdf_absolute_error.mean(dim=(0, 2, 3))
+        metric_prefix = f"rollout/{case_name}/{Path(test_file_path).stem}"
+        frame_metric = f"{metric_prefix}/frame"
+        mae_metric = f"{metric_prefix}/sdf_mae"
+        run.define_metric(mae_metric, step_metric=frame_metric)
+        for frame_index, frame_mae in enumerate(sdf_mae_per_frame):
+            run.log({frame_metric: frame_index, mae_metric: frame_mae.item()})
+        case_sdf_mae = sdf_absolute_error.mean().item()
+        run.summary[f"{metric_prefix}/sdf_mae_mean"] = case_sdf_mae
+        run.summary[f"{metric_prefix}/sdf_mae_final"] = sdf_mae_per_frame[-1].item()
+        run.summary[f"{metric_prefix}/evaluated_frames"] = len(sdf_mae_per_frame)
+        sdf_absolute_error_sum += sdf_absolute_error.sum().item()
+        sdf_value_count += sdf_absolute_error.numel()
+        print(f"SDF MAE for {case_name}: {case_sdf_mae:.6g}", flush=True)
+        del sdf_absolute_error, sdf_mae_per_frame
+
         fluid_params = test_dataset.sim_params[0]
         B, T_rollout, H, W, _ = preds.shape
 
@@ -415,6 +437,9 @@ def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
         )
         del test_results, preds, targets, test_dataset
         gc.collect()
+
+    if sdf_value_count:
+        run.summary["rollout/sdf_mae"] = sdf_absolute_error_sum / sdf_value_count
 
 if __name__ == "__main__":
     main()
