@@ -2,6 +2,7 @@ import math
 import gc
 
 import torch
+import wandb
 from diffusers.models.unets.unet_2d import UNet2DModel
 from diffusers.schedulers.scheduling_flow_match_euler_discrete import FlowMatchEulerDiscreteScheduler
 import hydra
@@ -60,6 +61,25 @@ def predict_surrogate(model, batch, normalizer, layout: str) -> torch.Tensor:
 
 @hydra.main(version_base=None, config_path="../config", config_name="default")
 def main(cfg: DictConfig):
+    run_config = OmegaConf.to_container(cfg, resolve=True)
+    run_config.update({
+        "learning_rate": cfg.get("lr", 2.5e-4),
+        "lr_warmup_steps": cfg.get("lr_warmup_steps", 150),
+        "min_lr_ratio": cfg.get("min_lr_ratio", 0.001),
+        "architecture": "UNet2DModel",
+        "epochs": 1000,
+        "num_train_timesteps": 100,
+        "num_inference_steps": 50,
+    })
+    with wandb.init(
+        entity="hpcforge",
+        project="diffusion",
+        config=run_config,
+    ) as run:
+        run_diffusion(cfg, run)
+
+
+def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
     set_fp32_precision()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seed_everything(cfg.seed)
@@ -191,6 +211,15 @@ def main(cfg: DictConfig):
             lr_scheduler.step()
             global_step += 1
 
+            run.log(
+                {
+                    "train/loss": loss.item(),
+                    "train/learning_rate": optimizer.param_groups[0]["lr"],
+                    "train/epoch": epoch,
+                },
+                step=global_step,
+            )
+
             if global_step % 100 == 0:
                 print(f'Step {global_step}: loss = {loss.item():.6f}, lr = {lr_scheduler.get_last_lr()[0]:.2e}')
 
@@ -201,6 +230,8 @@ def main(cfg: DictConfig):
 
     checkpoint_dir = Path(cfg.log_dir) / "diffusion_unet"
     unet.save_pretrained(checkpoint_dir)
+    run.summary["checkpoint_dir"] = str(checkpoint_dir)
+    run.summary["training_steps"] = global_step
     print(f"Saved diffusion U-Net to {checkpoint_dir}", flush=True)
     train_dataset.data.clear()
     del train_dataloader, train_dataset, optimizer, lr_scheduler

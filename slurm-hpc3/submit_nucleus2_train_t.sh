@@ -1,13 +1,16 @@
 #!/bin/bash
-#SBATCH -A amowli_lab
+#SBATCH -A AMOWLI_LAB 
 #SBATCH -p free-gpu32
 #SBATCH --job-name=train-nucleus-exp
-#SBATCH -o ~/slurm-%x-%j.out
+#SBATCH -o slurm-%x-%j.out
+#SBATCH -e slurm-%x-%j.err
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=100GB
 #SBATCH --gres=gpu:RTX6000:1
-#SBATCH --time=12:59:00
+#SBATCH --time=12:00:00
+#SBATCH --mail-user=tanishs4@uci.edu
+#SBATCH --mail-type=BEGIN,END
 
 uv venv $TMPDIR/NUCLEUS
 source $TMPDIR/NUCLEUS/bin/activate

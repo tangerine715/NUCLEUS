@@ -7,7 +7,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=12
 #SBATCH --gres=gpu:RTX6000:1
-#SBATCH --time=50:00:00
+#SBATCH --time=12:00:00
 #SBATCH --mail-user=tanishs4@uci.edu
 #SBATCH --mail-type=BEGIN,END
 
@@ -57,5 +57,5 @@ python scripts/diffusion.py \
     future_time_window=8 \
     time_step=1 \
     batch_size=4 \
-    max_steps=100000 \
+    max_steps=5 \
     log_dir=/pub/tanishs4/bubbleformer_logs/nucleus2_moe_singlebubble_2026-10-08_57936970
