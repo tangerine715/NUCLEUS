@@ -1,28 +1,40 @@
 #!/bin/bash
-#SBATCH -A AMOWLI_LAB 
+#SBATCH -A AMOWLI_LAB
 #SBATCH -p free-gpu32
 #SBATCH --job-name=train-nucleus-exp
 #SBATCH -o slurm-%x-%j.out
 #SBATCH -e slurm-%x-%j.err
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=100GB
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=24GB
 #SBATCH --gres=gpu:RTX6000:1
 #SBATCH --time=12:00:00
 #SBATCH --mail-user=tanishs4@uci.edu
 #SBATCH --mail-type=BEGIN,END
 
-uv venv $TMPDIR/NUCLEUS
-source $TMPDIR/NUCLEUS/bin/activate
-# This make it so `__pycache__`` files also go on the compute node.
-export PYTHONPYCACHE_DIR=$TMPDIR/pycache/
-# 1. `--no-cache` makes sure uv doesn't cache things in $HOME.
-# 2. --active syncs to the currently activated environment. Otherwise, uv
-#    tries to make another environment in the current directory.
-# 3. --extra just gets stuff in pyproject.toml optional-dependencies
-uv sync --no-cache --active --extra cu130
-uv pip install -e .
+set -euo pipefail
 
+project_dir="${NUCLEUS_PROJECT_DIR:-/pub/tanishs4/NUCLEUS}"
+if [[ ! -f "$project_dir/pyproject.toml" || ! -f "$project_dir/scripts/train.py" ]]; then
+    echo "NUCLEUS project not found at $project_dir. Set NUCLEUS_PROJECT_DIR to the repository root." >&2
+    exit 1
+fi
+cd "$project_dir"
+echo "Running NUCLEUS from $PWD"
+
+echo "env setup"
+uv venv "$TMPDIR/NUCLEUS"
+source "$TMPDIR/NUCLEUS/bin/activate"
+export PYTHONPYCACHE_DIR="$TMPDIR/pycache"
+export PYTHONUNBUFFERED=1
+
+echo "deps"
+uv sync --no-cache --active --extra cu128
+uv pip check
+python -c 'import torchvision; import natten; print("torchvision", torchvision.__version__, "natten", natten.__version__)'
+python -c 'import torch; print("torch", torch.__version__, "cuda", torch.version.cuda, "avail", torch.cuda.is_available(), torch.cuda.get_device_name(0))'
+
+echo "training start!"
 python scripts/train.py \
     model_cfg=nucleus2/nucleus2_experiment \
     model_cfg.params.processor_blocks=8 \
@@ -45,4 +57,5 @@ python scripts/train.py \
     scheduler_cfg.params.warmup=5000 \
     scheduler_cfg.params.cooldown=10000 \
     log_dir=/pub/tanishs4/nucleus2_logs \
-    profile=True
+    profile=False \
+    "$@"

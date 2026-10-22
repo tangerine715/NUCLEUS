@@ -45,11 +45,14 @@ python scripts/diffusion.py \
     normalizer_cfg=standard \
     pydataset=in_mem_forecast \
     data_dir=/share/crsp/lab/amowli/share/BubbleML_2/ \
-    checkpoint_path="$diffusion_checkpoint_path" \
+    checkpoint_path=/pub/tanishs4/bubbleformer_logs/nucleus2_moe_divfree_2026-10-13_58117670/checkpoints/last.ckpt \
     history_time_window=8 \
     future_time_window=8 \
     time_step=1 \
     batch_size=4 \
     max_steps=6 \
-    log_dir="$diffusion_log_dir" \
-    "$@"
+    log_dir=/pub/tanishs4/bubbleformer_logs/nucleus2_moe_divfree_2026-10-13_58117670
+
+
+
+

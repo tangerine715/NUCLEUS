@@ -57,5 +57,5 @@ python scripts/diffusion.py \
     future_time_window=8 \
     time_step=1 \
     batch_size=4 \
-    max_steps=5 \
+    max_steps=20000 \
     log_dir=/pub/tanishs4/bubbleformer_logs/nucleus2_moe_singlebubble_2026-10-08_57936970

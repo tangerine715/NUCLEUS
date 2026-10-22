@@ -14,11 +14,18 @@
 
 set -euo pipefail
 
-cd /pub/tanishs4/NUCLEUS
-uv venv $TMPDIR/NUCLEUS
-source $TMPDIR/NUCLEUS/bin/activate
+project_dir="${NUCLEUS_PROJECT_DIR:-/pub/tanishs4/NUCLEUS}"
+if [[ ! -f "$project_dir/pyproject.toml" || ! -f "$project_dir/scripts/train.py" ]]; then
+    echo "NUCLEUS project not found at $project_dir. Set NUCLEUS_PROJECT_DIR to the repository root." >&2
+    exit 1
+fi
+cd "$project_dir"
+echo "Running NUCLEUS from $PWD"
+
+uv venv "$TMPDIR/NUCLEUS"
+source "$TMPDIR/NUCLEUS/bin/activate"
 # This make it so `__pycache__`` files also go on the compute node.
-export PYTHONPYCACHE_DIR=$TMPDIR/pycache/
+export PYTHONPYCACHE_DIR="$TMPDIR/pycache/"
 # 1. `--no-cache` makes sure uv doesn't cache things in $HOME.
 # 2. --active syncs to the currently activated environment. Otherwise, uv
 #    tries to make another environment in the current directory.
@@ -43,6 +50,7 @@ python scripts/train.py \
     pydataset=in_mem_forecast \
     batch_size=4 \
     accumulate_grad_batches=1 \
+    +log_every_n_steps=1 \
     optim_cfg.params.lr=5e-4 \
     optim_cfg.params.weight_decay=1e-2 \
     max_steps=150000 \

@@ -23,11 +23,33 @@ from nucleus.models.nucleus2_moe_divfree import (
 )
 from nucleus.utils.set_fp32_precision import set_fp32_precision
 from nucleus.utils.sdf_reinit import sdf_reinit_sussman
+from nucleus.utils.sdf_metrics import sdf_frame_metrics
 from nucleus.utils.physical_metrics import PhysicalMetrics, BubbleMetrics, physical_metrics, bubble_metrics
 from nucleus.test import TestResults
 from nucleus.plot.plotting import plot_rollout
+from nucleus.plot.diffusion_gif import save_diffusion_gif
 from einops import rearrange
 from pathlib import Path
+
+
+def log_sdf_comparison(run, metric_prefix, variants, target, dx, dy, start_frame):
+    frame_metric = f"{metric_prefix}/frame"
+    records = {}
+    for variant_name, prediction in variants.items():
+        for metric_name, values in sdf_frame_metrics(prediction, target, dx, dy).items():
+            key = f"{metric_prefix}/{variant_name}/{metric_name}"
+            run.define_metric(key, step_metric=frame_metric)
+            records[key] = values.tolist()
+            if variant_name == "diffusion_reinitialized" and metric_name == "sdf_mae":
+                legacy_key = f"{metric_prefix}/sdf_mae"
+                run.define_metric(legacy_key, step_metric=frame_metric)
+                records[legacy_key] = values.tolist()
+    for frame_offset in range(target.shape[0]):
+        run.log({
+            frame_metric: start_frame + frame_offset,
+            **{key: values[frame_offset] for key, values in records.items()},
+        })
+    return records
 
 
 def predict_surrogate(model, batch, normalizer, layout: str) -> torch.Tensor:
@@ -292,6 +314,10 @@ def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
         preds_list = []
         targets_list = []
         prev_clean_flat = None
+        baseline_history = None
+        comparison_records = {}
+        rollout_window_paths = []
+        metric_prefix = f"rollout/{case_name}/{Path(test_file_path).stem}"
 
         with torch.no_grad():
             for itr in range(0, len(test_dataset), skip_itrs):
@@ -301,6 +327,11 @@ def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
                 bulk_temp = normalizer.unnormalize_params(
                     [batch.sim_params_dict[0]]
                 )[0]["bulk_temp"]
+
+                if baseline_history is not None:
+                    batch.input = baseline_history
+                baseline_prediction = predict_surrogate(model, batch, normalizer, layout)
+                baseline_history = baseline_prediction.detach()
 
                 if prev_clean_flat is not None:
                     # Feed the diffusion-corrected prediction back as next window's history,
@@ -345,21 +376,60 @@ def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
                     print(f"Hit NaN at iter {itr}")
                     break
 
+                sdf_field_index = list(cfg.data_cfg.output_fields).index("dfun")
+                target_sdf = convert_layout(tgt, "t h w c", layout)[..., sdf_field_index]
+                raw_sdf = convert_layout(pred, "t h w c", layout)[..., sdf_field_index].clone()
+                baseline_fields = normalizer.unnormalize(
+                    baseline_prediction, bulk_temp, layout=layout
+                ).squeeze(0).float().cpu()
+                baseline_sdf = convert_layout(
+                    baseline_fields, "t h w c", layout
+                )[..., sdf_field_index]
+
                 for t_idx in range(pred.shape[0]):
                     if layout == "t h w c":
                         pred[t_idx, :, :, 0] = sdf_reinit_sussman(pred[t_idx, :, :, 0], dx=dx, dy=dy)
                     else:
                         pred[t_idx, 0, :, :] = sdf_reinit_sussman(pred[t_idx, 0, :, :], dx=dx, dy=dy)
 
+                corrected_sdf = convert_layout(pred, "t h w c", layout)[..., sdf_field_index]
+                baseline_reinitialized = torch.stack([
+                    sdf_reinit_sussman(frame, dx=dx, dy=dy)
+                    for frame in baseline_sdf
+                ])
+                records = log_sdf_comparison(
+                    run, metric_prefix,
+                    {"diffusion_raw": raw_sdf, "diffusion_reinitialized": corrected_sdf,
+                     "surrogate": baseline_sdf,
+                     "surrogate_reinitialized": baseline_reinitialized},
+                    target_sdf, dx, dy, itr,
+                )
+                for key, values in records.items():
+                    comparison_records.setdefault(key, []).extend(values)
                 preds_list.append(pred)
                 targets_list.append(tgt)
                 torch.save(
-                    {"preds": pred, "targets": tgt, "start_index": itr},
+                    {"preds": pred, "targets": tgt, "start_index": itr,
+                     "diffusion_raw_sdf": raw_sdf, "surrogate_sdf": baseline_sdf,
+                     "surrogate_reinitialized_sdf": baseline_reinitialized},
                     case_dir / f"window_{itr:06d}.pt",
                 )
+                rollout_window_paths.append(case_dir / f"window_{itr:06d}.pt")
                 if itr // skip_itrs % 10 == 0:
                     print(f"Rollout {case_name}: {itr + skip_itrs}/{len(test_dataset)}", flush=True)
 
+        if rollout_window_paths:
+            gif_path = save_diffusion_gif(
+                rollout_window_paths, layout, sdf_field_index,
+                case_dir / "sdf_comparison.gif",
+                max_frames=cfg.get("rollout_gif_max_frames", 120),
+                fps=cfg.get("rollout_gif_fps", 10),
+            )
+            run.log({f"{metric_prefix}/comparison_gif": wandb.Video(str(gif_path), format="gif")})
+        for key, values in comparison_records.items():
+            metric_values = torch.tensor(values)
+            run.summary[f"{key}_mean"] = metric_values.nanmean().item()
+            run.summary[f"{key}_final"] = values[-1]
         preds = torch.cat(preds_list, dim=0)[None, ...]
         targets = torch.cat(targets_list, dim=0)[None, ...]
         del preds_list, targets_list
@@ -376,11 +446,6 @@ def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
         ).abs()
         sdf_mae_per_frame = sdf_absolute_error.mean(dim=(0, 2, 3))
         metric_prefix = f"rollout/{case_name}/{Path(test_file_path).stem}"
-        frame_metric = f"{metric_prefix}/frame"
-        mae_metric = f"{metric_prefix}/sdf_mae"
-        run.define_metric(mae_metric, step_metric=frame_metric)
-        for frame_index, frame_mae in enumerate(sdf_mae_per_frame):
-            run.log({frame_metric: frame_index, mae_metric: frame_mae.item()})
         case_sdf_mae = sdf_absolute_error.mean().item()
         run.summary[f"{metric_prefix}/sdf_mae_mean"] = case_sdf_mae
         run.summary[f"{metric_prefix}/sdf_mae_final"] = sdf_mae_per_frame[-1].item()

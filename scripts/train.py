@@ -292,7 +292,7 @@ def main(cfg: DictConfig) -> None:
         max_steps=cfg.max_steps,
         val_check_interval=cfg.val_check_interval,
         check_val_every_n_epoch=cfg.check_val_every_n_epoch,
-        log_every_n_steps=100,
+        log_every_n_steps=cfg.get("log_every_n_steps", 100),
         accumulate_grad_batches=cfg.accumulate_grad_batches,
         logger=logger,
         default_root_dir=cfg.log_dir,
