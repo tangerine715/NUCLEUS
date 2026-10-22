@@ -279,7 +279,7 @@ def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
             pretrained_rollout = data.preds.squeeze(0)
         print(f"Loaded pretrained rollout with shape {pretrained_rollout.shape}")
 
-    save_dir = Path(cfg.log_dir) / "20000_and_lowish_mem_TEST_diffusion_rollout"
+    save_dir = Path(cfg.log_dir) / "10k_step_diffusion_rollout"
     save_dir.mkdir(parents=True, exist_ok=True)
     sdf_absolute_error_sum = 0.0
     sdf_value_count = 0
