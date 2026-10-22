@@ -26,18 +26,23 @@ def _render_sdf_frame(fields: dict, frame_index: int, color_limit: float) -> Ima
 
 
 def _window_fields(window: dict, layout: str, sdf_index: int) -> dict:
-    return {
+    fields = {
         "Ground truth": convert_layout(window["targets"], "t h w c", layout)[..., sdf_index],
         "Surrogate": window["surrogate_sdf"],
         "Surrogate reinitialized": window["surrogate_reinitialized_sdf"],
         "Diffusion raw": window["diffusion_raw_sdf"],
         "Diffusion reinitialized": convert_layout(window["preds"], "t h w c", layout)[..., sdf_index],
     }
+    for variant in ("diffusion_gaussian_0_5", "diffusion_gaussian_1_0"):
+        if variant in window:
+            fields[variant] = window[variant]
+    return fields
 
 
 def save_diffusion_gif(
     window_paths: list[Path], layout: str, sdf_index: int,
     output_path: Path, max_frames: int = 120, fps: int = 10,
+    variant: str | None = None,
 ) -> Path:
     if max_frames < 1 or fps < 1:
         raise ValueError("GIF max_frames and fps must be positive.")
@@ -53,7 +58,7 @@ def save_diffusion_gif(
     sample_indices = np.linspace(0, total_frames - 1, min(max_frames, total_frames), dtype=int)
     samples = [selected_frames[index] for index in sample_indices]
     color_limit = _shared_color_limit(samples, layout, sdf_index)
-    frames = _render_samples(samples, layout, sdf_index, color_limit)
+    frames = _render_samples(samples, layout, sdf_index, color_limit, variant)
     frames[0].save(output_path, save_all=True, append_images=frames[1:],
                    duration=max(1, round(1000 / fps)), loop=0)
     return output_path
@@ -71,13 +76,25 @@ def _shared_color_limit(samples: list, layout: str, sdf_index: int) -> float:
     return max(color_limit, 1e-6)
 
 
-def _render_samples(samples: list, layout: str, sdf_index: int, color_limit: float) -> list:
+def _render_samples(
+    samples: list, layout: str, sdf_index: int, color_limit: float,
+    variant: str | None = None,
+) -> list:
     frames = []
     cached_path = None
     for window_path, offset, frame_index in samples:
         if window_path != cached_path:
             window = torch.load(window_path, map_location="cpu", weights_only=False)
             fields = _window_fields(window, layout, sdf_index)
+            if variant is not None:
+                fields = {
+                    "Ground truth": fields["Ground truth"],
+                    "Original diffusion": fields["Diffusion reinitialized"],
+                    f"Gaussian σ={variant.rsplit('_', 2)[1]}.{variant.rsplit('_', 1)[1]} cells": fields[variant],
+                }
+            else:
+                fields = {title: field for title, field in fields.items()
+                          if not title.startswith("diffusion_gaussian_")}
             cached_path = window_path
         frame_fields = {title: field[offset].numpy() for title, field in fields.items()}
         frames.append(_render_sdf_frame(frame_fields, frame_index, color_limit))

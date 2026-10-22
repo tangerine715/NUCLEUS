@@ -7,7 +7,8 @@ from nucleus.plot.diffusion_gif import save_diffusion_gif
 
 
 @pytest.mark.parametrize('layout', ['t h w c', 't c h w'])
-def test_comparison_gif_samples_multiple_windows(tmp_path, layout):
+@pytest.mark.parametrize('variant', [None, 'diffusion_gaussian_0_5', 'diffusion_gaussian_1_0'])
+def test_comparison_gif_samples_multiple_windows(tmp_path, layout, variant):
     window_paths = []
     for window_index in range(2):
         sdf = torch.arange(24).reshape(2, 3, 4).float() - 12 + window_index
@@ -19,9 +20,14 @@ def test_comparison_gif_samples_multiple_windows(tmp_path, layout):
             'diffusion_raw_sdf': sdf,
             'surrogate_sdf': sdf,
             'surrogate_reinitialized_sdf': sdf,
+            'diffusion_gaussian_0_5': sdf * 0.9,
+            'diffusion_gaussian_1_0': sdf * 0.8,
         }, window_path)
         window_paths.append(window_path)
-    result = save_diffusion_gif(window_paths, layout, 0, tmp_path / 'comparison.gif', max_frames=3)
+    result = save_diffusion_gif(
+        window_paths, layout, 0, tmp_path / 'comparison.gif', max_frames=3,
+        variant=variant,
+    )
     with Image.open(result) as animation:
         assert animation.format == 'GIF'
         assert animation.n_frames == 3

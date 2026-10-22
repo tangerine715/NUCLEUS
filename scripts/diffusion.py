@@ -24,6 +24,7 @@ from nucleus.models.nucleus2_moe_divfree import (
 from nucleus.utils.set_fp32_precision import set_fp32_precision
 from nucleus.utils.sdf_reinit import sdf_reinit_sussman
 from nucleus.utils.sdf_metrics import sdf_frame_metrics
+from nucleus.utils.sdf_smoothing import smooth_sdf_frames
 from nucleus.utils.physical_metrics import PhysicalMetrics, BubbleMetrics, physical_metrics, bubble_metrics
 from nucleus.test import TestResults
 from nucleus.plot.plotting import plot_rollout
@@ -92,6 +93,7 @@ def main(cfg: DictConfig):
         "epochs": 1000,
         "num_train_timesteps": 100,
         "num_inference_steps": 50,
+        "postprocessing_gaussian_sigma_cells": [0.5, 1.0],
     })
     with wandb.init(
         entity="hpcforge",
@@ -397,11 +399,16 @@ def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
                     sdf_reinit_sussman(frame, dx=dx, dy=dy)
                     for frame in baseline_sdf
                 ])
+                smoothed_variants = {
+                    "diffusion_gaussian_0_5": smooth_sdf_frames(raw_sdf, 0.5, dx, dy),
+                    "diffusion_gaussian_1_0": smooth_sdf_frames(raw_sdf, 1.0, dx, dy),
+                }
                 records = log_sdf_comparison(
                     run, metric_prefix,
                     {"diffusion_raw": raw_sdf, "diffusion_reinitialized": corrected_sdf,
                      "surrogate": baseline_sdf,
-                     "surrogate_reinitialized": baseline_reinitialized},
+                     "surrogate_reinitialized": baseline_reinitialized,
+                     **smoothed_variants},
                     target_sdf, dx, dy, itr,
                 )
                 for key, values in records.items():
@@ -411,7 +418,8 @@ def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
                 torch.save(
                     {"preds": pred, "targets": tgt, "start_index": itr,
                      "diffusion_raw_sdf": raw_sdf, "surrogate_sdf": baseline_sdf,
-                     "surrogate_reinitialized_sdf": baseline_reinitialized},
+                     "surrogate_reinitialized_sdf": baseline_reinitialized,
+                     **smoothed_variants},
                     case_dir / f"window_{itr:06d}.pt",
                 )
                 rollout_window_paths.append(case_dir / f"window_{itr:06d}.pt")
@@ -426,6 +434,14 @@ def run_diffusion(cfg: DictConfig, run: wandb.sdk.wandb_run.Run) -> None:
                 fps=cfg.get("rollout_gif_fps", 10),
             )
             run.log({f"{metric_prefix}/comparison_gif": wandb.Video(str(gif_path), format="gif")})
+            for variant in ("diffusion_gaussian_0_5", "diffusion_gaussian_1_0"):
+                gif_path = save_diffusion_gif(
+                    rollout_window_paths, layout, sdf_field_index,
+                    case_dir / f"{variant}.gif",
+                    max_frames=cfg.get("rollout_gif_max_frames", 120),
+                    fps=cfg.get("rollout_gif_fps", 10), variant=variant,
+                )
+                run.log({f"{metric_prefix}/{variant}/gif": wandb.Video(str(gif_path), format="gif")})
         for key, values in comparison_records.items():
             metric_values = torch.tensor(values)
             run.summary[f"{key}_mean"] = metric_values.nanmean().item()
